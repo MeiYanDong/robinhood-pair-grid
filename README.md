@@ -1,5 +1,7 @@
 # robinhood-pair-grid
 
+[![CI](https://github.com/MeiYanDong/robinhood-pair-grid/actions/workflows/ci.yml/badge.svg)](https://github.com/MeiYanDong/robinhood-pair-grid/actions/workflows/ci.yml)
+
 Robinhood Chain 上 PAIR/SPY Uniswap v4 单边区间网格。策略在同一个池中交替维护 BUY 和 SELL
 两个方向的 NFT；任何时刻只允许一条腿持有流动性。
 
@@ -79,8 +81,9 @@ PAIR_GRID_UNHALT_CONFIRM=I_UNDERSTAND npm run clear-halt
 
 ## 当前发布策略
 
-PR 必须通过格式、lint、类型、单元测试、覆盖率和 secret scan。发布工作流只生成带 SHA256 的
-不可变工件；生产部署是人工受控动作。仓库合并或发布不会自动启用钱包签名。
+PR 必须通过格式、lint、类型、单元测试、覆盖率、secret scan 和 critical dependency review。
+发布工作流只生成带 SHA256 的不可变工件；生产部署是人工受控动作。仓库合并或发布不会自动
+启用钱包签名。
 
 ## License
 

@@ -15,6 +15,8 @@ operator-managed service.
 - public-repository hygiene, technical specification, ADRs, runbook and SWAS deployment templates.
 - a CI gate for critical production dependency advisories and an explicit upstream SDK risk record.
 - a reviewed SSH hardening fragment and an evidence record for the unarmed SWAS deployment.
+- immutable SHA pins for GitHub Actions and independent verify, secret-scan and dependency-review gates.
+- an override from the transitive vulnerable OpenZeppelin Contracts build to `3.4.2-solc-0.7`.
 
 ### Changed
 
