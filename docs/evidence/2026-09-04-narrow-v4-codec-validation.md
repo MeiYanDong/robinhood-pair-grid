@@ -2,7 +2,7 @@
 
 Date: 2026-09-04
 
-Status: Local implementation validated; pull-request CI and deployment pending
+Status: Local implementation and pull-request CI validated; deployment pending
 
 ## Scope
 
@@ -38,17 +38,31 @@ After a clean install with the old packages absent from `node_modules`:
 ```text
 npm run verify: PASS
 tests: 33 passed, 0 failed
-line coverage: 92.33%
+line coverage: 92.35%
 branch coverage: 68.85%
 function coverage: 97.26%
 uniswap-v4-position.mjs line coverage: 97.45%
 ```
 
-`npm ls --omit=dev --all` showed `viem@2.56.3` as the only direct production dependency. The first pull-request
-CI audit request later returned `503 Service Unavailable`, so that run correctly failed and the post-migration
-audit result remained `UNKNOWN`. A bounded retry wrapper was then added; it only accepts a structurally complete
-npm vulnerability result, still fails on a real high/critical result, and fails after exhausted transport
-retries.
+`npm ls --omit=dev --all` showed `viem@2.56.3` as the only direct production dependency. The first complete
+pull-request audit correctly found one high-severity advisory in the hoisted `ws@8.18.0` peer dependency. The
+lockfile was deduplicated so both `viem` and `isows` now resolve to the patched `ws@8.21.0`; a clean install then
+contained 87 total packages and 15 production packages.
+
+The final pull-request gates passed on commit `44bf13cd3edf9e457864a32851eb865dc25c7761`:
+
+- [CI run 33852780277](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33852780277): `verify`
+  passed in 3m22s, including formatting, lint, shell syntax, type checking, 33 tests, coverage thresholds,
+  systemd verification and the production audit;
+- the online audit's first request timed out, then its bounded second attempt returned a structurally complete
+  result with 0 total, high or critical vulnerabilities across 87 dependencies;
+- [dependency-review run 33852780238](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33852780238):
+  passed at the high-severity threshold;
+- `secret-scan`: passed.
+
+The retry wrapper only accepts a structurally complete npm vulnerability result, still fails immediately on a
+real high/critical result, and fails after exhausted transport retries. CI and release installation also disable
+npm's duplicate install-time audit; the explicit fail-closed audit remains the single security gate.
 
 ## Canonical-chain no-broadcast evidence
 
