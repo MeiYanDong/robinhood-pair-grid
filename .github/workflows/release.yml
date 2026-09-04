@@ -31,7 +31,7 @@ jobs:
         run: |
           git archive --format=tar.gz --output=robinhood-pair-grid-${{ inputs.ref }}.tar.gz HEAD
           sha256sum robinhood-pair-grid-${{ inputs.ref }}.tar.gz > robinhood-pair-grid-${{ inputs.ref }}.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: robinhood-pair-grid-${{ inputs.ref }}
           path: |
