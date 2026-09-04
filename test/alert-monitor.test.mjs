@@ -1,8 +1,28 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { markMonitorDelivery, planMonitorRun } from '../lib/alert-monitor.mjs'
+import { assertCanonicalReadbackReport, markMonitorDelivery, planMonitorRun } from '../lib/alert-monitor.mjs'
 
 const START = new Date('2026-09-04T00:00:00.000Z')
+
+test('canonical monitor readback accepts the real status command contract', () => {
+  const report = {
+    evidenceClass: 'CANONICAL_CHAIN_READBACK_WITH_LOCAL_STATE_COMPARISON',
+    observedAt: START.toISOString(),
+    blockNumber: '54131011',
+    localStatus: 'BUY_ACTIVE',
+    nonce: { latest: 4, pending: 4 },
+  }
+
+  assert.equal(assertCanonicalReadbackReport(report), report)
+  assert.throws(
+    () => assertCanonicalReadbackReport({ ...report, evidenceClass: undefined }),
+    /evidenceClass/u,
+  )
+  assert.throws(
+    () => assertCanonicalReadbackReport({ ...report, nonce: { latest: 4, pending: -1 } }),
+    /nonce/u,
+  )
+})
 
 test('readback alert starts only at the configured consecutive failure threshold', () => {
   let previous = {}
