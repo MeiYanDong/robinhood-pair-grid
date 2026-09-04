@@ -57,8 +57,10 @@ environment variables, process arguments, GitHub secrets or the public evidence 
 sudo systemd-creds encrypt --name=pair-grid-alert - /etc/credstore.encrypted/pair-grid-alert
 ```
 
-The bot should use both signature verification and the SWAS public egress IP allowlist. Test the independent
-path before enabling its monitor timer:
+The bot must use signature verification. It should also use the stable SWAS public egress IP allowlist; until
+that separate UI change is explicitly approved and verified, track it as
+[Issue 18](https://github.com/MeiYanDong/robinhood-pair-grid/issues/18) and do not claim it is active. Test the
+independent path before enabling its monitor timer:
 
 ```bash
 sudo systemctl start robinhood-pair-grid-alert-test.service
