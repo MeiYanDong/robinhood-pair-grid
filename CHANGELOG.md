@@ -13,13 +13,15 @@ operator-managed service.
 - macOS Keychain and Linux systemd credential loaders;
 - format, lint, JavaScript type checking, coverage thresholds and GitHub CI;
 - public-repository hygiene, technical specification, ADRs, runbook and SWAS deployment templates.
-- a CI gate for critical production dependency advisories and an explicit upstream SDK risk record.
+- a fail-closed current-tree GitHub Advisory Database gate for high and critical production findings;
 - a reviewed SSH hardening fragment and an evidence record for the unarmed SWAS deployment.
 - immutable SHA pins for GitHub Actions and independent verify, secret-scan and dependency-review gates.
-- an override from the transitive vulnerable OpenZeppelin Contracts build to `3.4.2-solc-0.7`.
+- a narrow Uniswap v4 position math and calldata codec with fixed SDK vectors and differential parity evidence.
 
 ### Changed
 
 - wallet identity is runtime configuration and is no longer embedded in public source;
 - every write transaction revalidates chain and contract identity;
-- deployment is manual-gated and does not arm live signing automatically.
+- deployment is manual-gated and does not arm live signing automatically;
+- the broad Uniswap SDK, Hardhat and ethers v5 production dependency tree was removed, and the remaining
+  `viem` tree resolves to a patched `ws` version.
