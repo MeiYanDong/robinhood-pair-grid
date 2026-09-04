@@ -1,0 +1,6 @@
+[Unit]
+Description=Record a high-priority PAIR grid keeper failure for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger --priority=daemon.alert --tag=robinhood-pair-grid unit %i failed; strategy remains fail-closed

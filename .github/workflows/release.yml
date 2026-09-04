@@ -1,0 +1,41 @@
+name: Build release artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full commit SHA from main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+      - name: Require an exact full commit SHA
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.ref }}"
+      - name: Package immutable source
+        run: |
+          git archive --format=tar.gz --output=robinhood-pair-grid-${{ inputs.ref }}.tar.gz HEAD
+          sha256sum robinhood-pair-grid-${{ inputs.ref }}.tar.gz > robinhood-pair-grid-${{ inputs.ref }}.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: robinhood-pair-grid-${{ inputs.ref }}
+          path: |
+            robinhood-pair-grid-${{ inputs.ref }}.tar.gz
+            robinhood-pair-grid-${{ inputs.ref }}.sha256
+          if-no-files-found: error
+          retention-days: 30
