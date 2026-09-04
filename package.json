@@ -13,7 +13,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "lint:deploy": "bash -n deploy/install-release.sh",
-    "audit:prod": "npm audit --omit=dev --audit-level=critical",
+    "audit:prod": "node scripts/audit-prod.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='lib/**/*.mjs' --test-coverage-lines=85 --test-coverage-branches=60 --test-coverage-functions=90",
@@ -33,12 +33,7 @@
     "exit": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs exit"
   },
   "dependencies": {
-    "@uniswap/sdk-core": "7.19.2",
-    "@uniswap/v4-sdk": "2.3.3",
     "viem": "2.56.3"
-  },
-  "overrides": {
-    "@openzeppelin/contracts": "3.4.2-solc-0.7"
   },
   "devDependencies": {
     "@types/node": "22.20.1",

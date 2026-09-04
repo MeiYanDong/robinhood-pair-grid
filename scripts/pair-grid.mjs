@@ -1,6 +1,5 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createRequire } from 'node:module'
 import {
   createPublicClient,
   createWalletClient,
@@ -24,6 +23,16 @@ import {
   legCompletion,
   sellRangeFromBasis,
 } from '../lib/ranges.mjs'
+import {
+  burnAmountsWithSlippage,
+  encodeAddLiquidity,
+  encodeRemoveLiquidity,
+  mintAmounts,
+  mintAmountsWithSlippage,
+  poolId,
+  positionAmounts,
+  singleSidedPosition,
+} from '../lib/uniswap-v4-position.mjs'
 import { loadSignerAccount } from '../lib/account-loader.mjs'
 import { assertLiveArm, decideKeeperAction, redactSensitiveText } from '../lib/runtime-guards.mjs'
 import { StateStore } from '../lib/state-store.mjs'
@@ -34,10 +43,6 @@ import {
   recoverRotationMint,
   recoverRotationRemoval,
 } from '../lib/recovery.mjs'
-
-const require = createRequire(import.meta.url)
-const { Pool, Position, V4PositionManager } = require('@uniswap/v4-sdk')
-const { Percent, Token } = require('@uniswap/sdk-core')
 
 const CHAIN_ID = 4663
 const RPC_URL = process.env.RH_RPC_URL || 'https://rpc.mainnet.chain.robinhood.com'
@@ -73,8 +78,8 @@ const CONSERVATIVE_APPROVAL_GAS = 120_000n
 const CONSERVATIVE_MINT_GAS = 500_000n
 const CONSERVATIVE_ROTATION_MINT_GAS = 600_000n
 const SWAP_SLIPPAGE_BPS = 100n
-const ADD_SLIPPAGE = new Percent(50, 10_000)
-const REMOVE_SLIPPAGE = new Percent(200, 10_000)
+const ADD_SLIPPAGE_BPS = 50n
+const REMOVE_SLIPPAGE_BPS = 200n
 const TOKEN_USE_BPS = 9_800n
 const FEE_TIERS = [10_000, 3_000, 500, 100]
 const UINT160_MAX = (1n << 160n) - 1n
@@ -183,16 +188,17 @@ const poolKey = {
   hooks: HOOK,
 }
 
+const COMPUTED_POOL_ID = poolId(poolKey)
+if (COMPUTED_POOL_ID.toLowerCase() !== POOL_ID.toLowerCase()) {
+  throw new Error(`本地 PoolId 编码不匹配: ${COMPUTED_POOL_ID}`)
+}
+
 function nowSeconds() {
   return Math.floor(Date.now() / 1_000)
 }
 
 function bpsFloor(value, bps) {
   return (value * (10_000n - bps)) / 10_000n
-}
-
-function asBigInt(value) {
-  return BigInt(value.toString())
 }
 
 function stringify(value) {
@@ -285,25 +291,6 @@ async function getPoolState() {
     throw new Error(`官方池状态异常: sqrt=${sqrtPriceX96}, liquidity=${liquidity}, lpFee=${lpFee}`)
   }
   return { sqrtPriceX96, tick, protocolFee, lpFee, liquidity }
-}
-
-function makePool(state) {
-  const spyToken = new Token(CHAIN_ID, SPY, 18, 'SPY', 'Robinhood SPY Stock Token')
-  const pairToken = new Token(CHAIN_ID, PAIR, 18, 'PAIR', 'PAIR')
-  const pool = new Pool(
-    spyToken,
-    pairToken,
-    POOL_FEE,
-    TICK_SPACING,
-    HOOK,
-    state.sqrtPriceX96.toString(),
-    state.liquidity.toString(),
-    state.tick,
-  )
-  if (pool.poolId.toLowerCase() !== POOL_ID.toLowerCase()) {
-    throw new Error(`SDK PoolId 不匹配: ${pool.poolId}`)
-  }
-  return pool
 }
 
 function v3Path(tokens, fees) {
@@ -544,24 +531,22 @@ async function buildLegAdd(account, { leg, tickLower, tickUpper, availableWei, t
   if (availableWei <= 0n) throw new Error(`${leg} 腿可用金额为 0`)
   const poolState = await getPoolState()
   assertLegIsSingleSided(leg, poolState, tickLower, tickUpper)
-  const pool = makePool(poolState)
   const usableWei = (availableWei * TOKEN_USE_BPS) / 10_000n
-  const position =
-    leg === 'BUY'
-      ? Position.fromAmount0({
-          pool,
-          tickLower,
-          tickUpper,
-          amount0: usableWei.toString(),
-          useFullPrecision: true,
-        })
-      : Position.fromAmount1({ pool, tickLower, tickUpper, amount1: usableWei.toString() })
-  const amount0Desired = asBigInt(position.mintAmounts.amount0)
-  const amount1Desired = asBigInt(position.mintAmounts.amount1)
-  const maximums = position.mintAmountsWithSlippage(ADD_SLIPPAGE)
-  const amount0Max = asBigInt(maximums.amount0)
-  const amount1Max = asBigInt(maximums.amount1)
-  if (asBigInt(position.liquidity) <= 0n) throw new Error(`${leg} 腿可铸造流动性为 0`)
+  const position = singleSidedPosition({
+    leg,
+    sqrtPriceX96: poolState.sqrtPriceX96,
+    tickLower,
+    tickUpper,
+    tickSpacing: TICK_SPACING,
+    amount: usableWei,
+  })
+  const desired = mintAmounts(position)
+  const maximums = mintAmountsWithSlippage(position, ADD_SLIPPAGE_BPS)
+  const amount0Desired = desired.amount0
+  const amount1Desired = desired.amount1
+  const amount0Max = maximums.amount0
+  const amount1Max = maximums.amount1
+  if (position.liquidity <= 0n) throw new Error(`${leg} 腿可铸造流动性为 0`)
   if (leg === 'BUY') {
     if (amount0Desired <= 0n || amount1Desired !== 0n || amount1Max !== 0n) {
       throw new Error(
@@ -582,48 +567,55 @@ async function buildLegAdd(account, { leg, tickLower, tickUpper, availableWei, t
     { token: PAIR, amount: amount1Max },
   ])
   const common = {
-    slippageTolerance: ADD_SLIPPAGE,
-    deadline: BigInt(nowSeconds() + 5 * 60).toString(),
-    hookData: '0x',
+    poolKey,
+    tickLower,
+    tickUpper,
+    liquidity: position.liquidity,
+    amount0Max,
+    amount1Max,
+    deadline: BigInt(nowSeconds() + 5 * 60),
     batchPermit,
   }
-  const options =
-    tokenId === null ? { ...common, recipient: WALLET } : { ...common, tokenId: String(tokenId) }
-  const method = V4PositionManager.addCallParameters(position, /** @type {any} */ (options))
+  const data = encodeAddLiquidity(
+    tokenId === null ? { ...common, recipient: WALLET } : { ...common, tokenId: BigInt(tokenId) },
+  )
   return {
     leg,
     poolState,
     position,
-    liquidity: asBigInt(position.liquidity),
+    liquidity: position.liquidity,
     usableWei,
     amount0Desired,
     amount1Desired,
     amount0Max,
     amount1Max,
-    data: method.calldata,
+    data,
   }
 }
 
 function buildFullRemove(positionRecord, liquidity, poolState) {
-  const position = new Position({
-    pool: makePool(poolState),
-    liquidity: liquidity.toString(),
+  const position = {
+    sqrtPriceX96: poolState.sqrtPriceX96,
+    liquidity,
     tickLower: positionRecord.tickLower,
     tickUpper: positionRecord.tickUpper,
-  })
-  const method = V4PositionManager.removeCallParameters(position, {
-    tokenId: String(positionRecord.tokenId),
-    liquidityPercentage: new Percent(1, 1),
-    burnToken: false,
-    slippageTolerance: REMOVE_SLIPPAGE,
-    deadline: BigInt(nowSeconds() + 5 * 60).toString(),
-    hookData: '0x',
+    tickSpacing: TICK_SPACING,
+  }
+  const principal = positionAmounts(position)
+  const minimums = burnAmountsWithSlippage(position, REMOVE_SLIPPAGE_BPS)
+  const data = encodeRemoveLiquidity({
+    poolKey,
+    tokenId: BigInt(positionRecord.tokenId),
+    liquidity,
+    amount0Min: minimums.amount0,
+    amount1Min: minimums.amount1,
+    deadline: BigInt(nowSeconds() + 5 * 60),
   })
   return {
     position,
-    amount0Principal: asBigInt(position.amount0.quotient),
-    amount1Principal: asBigInt(position.amount1.quotient),
-    data: method.calldata,
+    amount0Principal: principal.amount0,
+    amount1Principal: principal.amount1,
+    data,
   }
 }
 
@@ -1125,14 +1117,15 @@ async function resumeBuy() {
     if (liquidity !== refreshedAdd.liquidity) {
       throw new Error(`NFT 流动性与计划不一致：chain=${liquidity}, plan=${refreshedAdd.liquidity}`)
     }
-    const livePosition = new Position({
-      pool: makePool(finalPool),
-      liquidity: liquidity.toString(),
+    const underlying = positionAmounts({
+      sqrtPriceX96: finalPool.sqrtPriceX96,
+      liquidity,
       tickLower: state.pending.tickLower,
       tickUpper: state.pending.tickUpper,
+      tickSpacing: TICK_SPACING,
     })
-    const underlyingSpy = asBigInt(livePosition.amount0.quotient)
-    const underlyingPair = asBigInt(livePosition.amount1.quotient)
+    const underlyingSpy = underlying.amount0
+    const underlyingPair = underlying.amount1
     if (finalPool.tick < state.pending.tickLower && underlyingPair !== 0n) {
       throw new Error(`买入腿链上成分不是纯 SPY：PAIR=${underlyingPair}`)
     }
@@ -1272,14 +1265,15 @@ async function statusData() {
       }),
       getAccruedFees(record),
     ])
-    const position = new Position({
-      pool: makePool(poolState),
-      liquidity: liquidity.toString(),
+    const underlying = positionAmounts({
+      sqrtPriceX96: poolState.sqrtPriceX96,
+      liquidity,
       tickLower: record.tickLower,
       tickUpper: record.tickUpper,
+      tickSpacing: TICK_SPACING,
     })
-    const amount0 = asBigInt(position.amount0.quotient)
-    const amount1 = asBigInt(position.amount1.quotient)
+    const amount0 = underlying.amount0
+    const amount1 = underlying.amount1
     const boundaryComplete = legCompletion(
       local.activeLeg,
       poolState.tick,
@@ -1371,14 +1365,16 @@ function requireLastTransaction(transactions, expectedTo, labelFragment) {
 }
 
 function recoveryPositionComposition(leg, poolState, record, liquidity) {
-  const position = new Position({
-    pool: makePool(poolState),
-    liquidity: liquidity.toString(),
+  const position = {
+    sqrtPriceX96: poolState.sqrtPriceX96,
+    liquidity,
     tickLower: record.tickLower,
     tickUpper: record.tickUpper,
-  })
-  const spyWei = asBigInt(position.amount0.quotient)
-  const pairWei = asBigInt(position.amount1.quotient)
+    tickSpacing: TICK_SPACING,
+  }
+  const amounts = positionAmounts(position)
+  const spyWei = amounts.amount0
+  const pairWei = amounts.amount1
   const compositionValid =
     leg === 'BUY'
       ? poolState.tick >= record.tickLower || pairWei === 0n
@@ -1980,14 +1976,15 @@ async function resumeRotate() {
         `换腿 NFT 回读不匹配：owner=${owner}, chainLiquidity=${liquidity}, plan=${refreshed.liquidity}`,
       )
     }
-    const livePosition = new Position({
-      pool: makePool(finalPool),
-      liquidity: liquidity.toString(),
+    const underlying = positionAmounts({
+      sqrtPriceX96: finalPool.sqrtPriceX96,
+      liquidity,
       tickLower: pending.targetTickLower,
       tickUpper: pending.targetTickUpper,
+      tickSpacing: TICK_SPACING,
     })
-    const underlyingSpy = asBigInt(livePosition.amount0.quotient)
-    const underlyingPair = asBigInt(livePosition.amount1.quotient)
+    const underlyingSpy = underlying.amount0
+    const underlyingPair = underlying.amount1
     if (targetLeg === 'BUY' && underlyingPair !== 0n) throw new Error('新买入腿不是纯 SPY')
     if (targetLeg === 'SELL' && underlyingSpy !== 0n) throw new Error('新卖出腿不是纯 PAIR')
     const tokenNet = tokenNetFromReceipt(added.receipt, token)

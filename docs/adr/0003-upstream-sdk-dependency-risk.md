@@ -1,6 +1,6 @@
 # ADR 0003: Upstream Uniswap SDK dependency risk
 
-Status: Open; blocks unattended live activation
+Status: Superseded by [ADR 0004](0004-narrow-v4-position-codec.md)
 
 Date: 2026-09-04
 
@@ -44,3 +44,9 @@ fixed build `3.4.2-solc-0.7`.
 
 The code, encrypted credential and read-only checks may be deployed, but this repository must not claim the
 dependency risk is resolved or the strategy is ready for unattended signing.
+
+## Resolution
+
+ADR 0004 removed both Uniswap SDK packages from the production dependency graph and raised the production
+audit and pull-request dependency-review thresholds from critical to high. This document remains as the
+historical reason for that replacement; it no longer describes the current dependency tree.

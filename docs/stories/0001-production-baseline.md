@@ -20,7 +20,9 @@ secret scanning and critical dependency review; the protected branch requires al
 Acceptance: Linux reads an encrypted systemd credential; deployed code and state are read back; the service
 passes credential and read-only chain checks; the timer and live arm remain disabled.
 
-Current activation blocker: [ADR 0003](../adr/0003-upstream-sdk-dependency-risk.md).
+The original SDK dependency blocker was resolved by
+[ADR 0004](../adr/0004-narrow-v4-position-codec.md). Unattended activation remains a separate operational
+decision and is not implied by resolving that dependency tree.
 
 ## Story 5 - Harden and prove the unarmed host
 
