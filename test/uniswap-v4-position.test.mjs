@@ -17,7 +17,7 @@ import {
 const SPY = '0x117cc2133c37B721F49dE2A7a74833232B3B4C0C'
 const PAIR = '0x6b1d42927B1a84eC28Fa88d4fC6FA7AF404966be'
 const HOOK = '0x16D1560630Ce74af4478d9b8AD46548A092A2000'
-const WALLET = '0x5F87869a8c63F3e8f065d999390e56fB25344041'
+const WALLET = '0x1111111111111111111111111111111111111111'
 const POSITION_MANAGER = '0x58daec3116aae6D93017bAAea7749052E8a04fA7'
 const POOL_KEY = { currency0: SPY, currency1: PAIR, fee: 10_000, tickSpacing: 200, hooks: HOOK }
 const SIGNATURE = /** @type {import('viem').Hex} */ (`0x${'11'.repeat(65)}`)
@@ -145,12 +145,12 @@ test('mint, increase and remove calldata remain byte-identical to SDK 2.3.3', ()
   assertCalldata(
     encodeAddLiquidity({ ...commonBuy, recipient: WALLET }),
     1604,
-    '0x53ef6d1bbdcd2752e631ae21894d766567c4657d7dfd01a9c084ce2d7b577a67',
+    '0x12674e8beee89e334d4f268871b0c52954b6f6fa3f30490cd16b4317114aba6e',
   )
   assertCalldata(
-    encodeAddLiquidity({ ...commonBuy, tokenId: 1715883n }),
+    encodeAddLiquidity({ ...commonBuy, tokenId: 42n }),
     1444,
-    '0x64337a31a521d9fb9cef9cf9e776efbcbe8ffe05fea374a35871f92091b8f685',
+    '0x33f228cd226a054edca8df4244820f5415e4da2387f8cda1ca12a8fd25611715',
   )
 
   const sellPosition = singleSidedPosition({
@@ -175,20 +175,20 @@ test('mint, increase and remove calldata remain byte-identical to SDK 2.3.3', ()
       deadline: 2_000_000_100n,
     }),
     1604,
-    '0x46ce0de2d47d1bcf0661bedce71aac9d875e61966a24a24af5f142f7db3513ff',
+    '0x753b12a390adfa7118b3725d91071ccd6c64bba3acaa56d0fd7f285d9660e401',
   )
 
   assertCalldata(
     encodeRemoveLiquidity({
       poolKey: POOL_KEY,
-      tokenId: 1715883n,
+      tokenId: 42n,
       liquidity: 97509782552300510733n,
       amount0Min: 5211641831868576n,
       amount1Min: 700955807415015260655n,
       deadline: 2_000_000_100n,
     }),
     676,
-    '0xe94508d3e6a43e94d5361b4283924619f1ec7e81f0516e4748f6f0d450f8ccf6',
+    '0x6770a4a3923297285fcea72e9c47c94903c70cf20fdebd72ed8d2764d7b85825',
   )
 })
 
