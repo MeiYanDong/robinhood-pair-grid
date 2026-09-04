@@ -28,6 +28,8 @@ Gas、滑点以及自动化故障。
 - pending/意外 nonce、NFT owner/liquidity 不一致或回执未知都会持久化为 `HALTED`。
 - 进程锁防止 timer、人工命令和其他进程并发使用同一状态与 nonce。
 - `reconcile` 只接受本地广播记录与链上成功回执一一对应的恢复证据，不盲目重试交易。
+- 生产依赖只保留 `viem`；本地 v4 头寸数学与 PositionManager 编码必须通过旧版 SDK 的固定
+  数值和 calldata 哈希兼容向量。
 
 ## 本地开发
 
@@ -81,10 +83,11 @@ PAIR_GRID_UNHALT_CONFIRM=I_UNDERSTAND npm run clear-halt
 
 ## 当前发布策略
 
-PR 必须通过格式、lint、类型、单元测试、覆盖率、secret scan 和 critical dependency review。
+PR 必须通过格式、lint、类型、单元测试、覆盖率、secret scan 和 high dependency review。
 发布工作流只生成带 SHA256 的不可变工件；生产部署是人工受控动作。仓库合并或发布不会自动
 启用钱包签名。
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE)。Uniswap 衍生数学常量和编码结构的归属见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

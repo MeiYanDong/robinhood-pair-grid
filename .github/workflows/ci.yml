@@ -25,7 +25,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
-      - name: Block critical production dependency advisories
+      - name: Block high or critical production dependency advisories
         run: npm run audit:prod
       - run: bash -n deploy/install-release.sh
       - run: systemd-analyze verify deploy/systemd/*.service deploy/systemd/*.timer
