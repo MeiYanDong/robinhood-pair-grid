@@ -22,11 +22,19 @@ Several affected packages are tooling dependencies pulled into the production tr
 metadata rather than code intentionally invoked by this keeper. That reduces likely reachability but does not
 make the advisories disappear.
 
+After GitHub Dependabot alerts were enabled, it additionally classified the transitive
+`@openzeppelin/contracts@3.4.1-solc-0.7-2` package as critical under `GHSA-fg47-3c2x-m2wr`. The keeper does not
+deploy or call the affected `TimelockController`, but a runtime-scoped critical dependency still requires an
+explicit patch. The lockfile therefore overrides all OpenZeppelin Contracts paths to the vendor-published
+fixed build `3.4.2-solc-0.7`.
+
 ## Decision
 
 - Do not run `npm audit fix --force`; npm proposes a semver-major downgrade and that would change calldata
   behavior without adequate evidence.
 - CI blocks any critical production advisory and records high advisories visibly.
+- Pull requests run GitHub Dependency Review and block newly introduced critical advisories that npm may
+  classify differently.
 - Keep the production timer disabled while this ADR is open.
 - Use exact lockfile versions and `--ignore-scripts` for production installation.
 - Before unattended activation, either document tested non-reachability for the installed bundle or remove the
