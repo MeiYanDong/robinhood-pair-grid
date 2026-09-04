@@ -1,0 +1,46 @@
+{
+  "name": "robinhood-pair-grid",
+  "version": "0.2.0",
+  "description": "Fail-closed single-sided PAIR/SPY range grid for Robinhood Chain",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "lint:deploy": "bash -n deploy/install-release.sh",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='lib/**/*.mjs' --test-coverage-lines=85 --test-coverage-branches=60 --test-coverage-functions=90",
+    "verify": "npm run format:check && npm run lint && npm run lint:deploy && npm run typecheck && npm run test:coverage",
+    "key-check": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs key-check",
+    "inspect": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs inspect",
+    "preflight": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs preflight",
+    "enter-buy": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs enter-buy",
+    "resume-buy": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs resume-buy",
+    "status": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs status",
+    "keeper-once": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs keeper-once",
+    "rotate": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs rotate",
+    "resume-rotate": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs resume-rotate",
+    "reconcile": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs reconcile",
+    "halt-status": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs halt-status",
+    "clear-halt": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs clear-halt",
+    "exit": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs exit"
+  },
+  "dependencies": {
+    "@uniswap/sdk-core": "7.19.2",
+    "@uniswap/v4-sdk": "2.3.3",
+    "viem": "2.56.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "eslint": "10.9.1",
+    "globals": "17.12.0",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3"
+  }
+}
