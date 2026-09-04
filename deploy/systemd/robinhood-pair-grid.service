@@ -14,7 +14,7 @@ Environment=NODE_ENV=production
 Environment=PAIR_GRID_RUN_DIR=/var/lib/robinhood-pair-grid
 EnvironmentFile=/etc/robinhood-pair-grid/runtime.env
 LoadCredentialEncrypted=pair-grid-private-key:/etc/credstore.encrypted/robinhood-pair-grid-private-key
-ExecStart=/usr/bin/npm run keeper-once
+ExecStart=/usr/local/bin/npm run keeper-once
 StateDirectory=robinhood-pair-grid
 StateDirectoryMode=0700
 UMask=0077
