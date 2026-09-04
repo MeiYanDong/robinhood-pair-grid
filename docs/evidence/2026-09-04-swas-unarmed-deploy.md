@@ -2,6 +2,9 @@
 
 Date: 2026-09-04
 
+Status: Historical snapshot for commit `b8d99be96efe952aa538c0e6ce65170130ce2371`; superseded by the
+[narrow-codec deployment](2026-09-04-narrow-codec-unarmed-deploy.md).
+
 Scope: dedicated Ubuntu 24.04 host in `us-west-1`. Public evidence omits the server address, instance ID,
 wallet address, transaction hashes and provider request identifiers.
 
@@ -57,7 +60,7 @@ wallet address, transaction hashes and provider request identifiers.
   passed its embedded checksum, and its SHA256 exactly matched the artifact already deployed on the server.
 - Private vulnerability reporting, Dependabot alerts and automated security fixes are enabled.
 
-## Open production blockers
+## Open production blockers at this snapshot
 
 - Production dependencies report 16 low, 4 moderate, 10 high and 0 critical advisories. See
   [ADR 0003](../adr/0003-upstream-sdk-dependency-risk.md).

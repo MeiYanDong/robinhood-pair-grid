@@ -2,13 +2,13 @@
 
 Date: 2026-09-04
 
-Status: Local implementation and intermediate pull-request CI validated; final gate and deployment pending
+Status: Complete; merged as `877ea256f5c4c43684dc50d184953441401c6e1e` and deployed unarmed
 
 ## Scope
 
 Replace `@uniswap/v4-sdk` and `@uniswap/sdk-core` as production dependencies without changing strategy
-parameters, wallet state or transaction bytes. No signing, broadcast, server deployment or timer change is in
-scope for this validation stage.
+parameters, wallet state or transaction bytes. No signing, broadcast or timer activation was in scope for this
+validation stage.
 
 ## Current upstream boundary
 
@@ -76,8 +76,20 @@ and the observed npm registry transport failure. The gate was therefore moved to
   returning an unconditional empty result.
 
 CI and release installation disable npm's duplicate install-time audit; the explicit fail-closed advisory scan
-remains the single current-tree security gate. Final pull-request CI for this transport replacement remains
-pending at this evidence snapshot.
+remains the single current-tree security gate.
+
+The final pull-request head `87a0796cc22f09b49a43ad767dcdf7b14e9c28d7` then passed:
+
+- [CI run 33854323172](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33854323172):
+  `verify` in 21 seconds and `secret-scan` in 8 seconds;
+- [dependency-review run 33854323184](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33854323184):
+  passed at the high-severity threshold.
+
+[Pull request 13](https://github.com/MeiYanDong/robinhood-pair-grid/pull/13) was squash-merged as
+`877ea256f5c4c43684dc50d184953441401c6e1e`. Its independent
+[main CI run 33854392516](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33854392516) passed
+before release. Deployment evidence is recorded separately in
+[the unarmed narrow-codec deployment report](2026-09-04-narrow-codec-unarmed-deploy.md).
 
 ## Canonical-chain no-broadcast evidence
 
