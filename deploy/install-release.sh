@@ -46,6 +46,8 @@ mv -Tf "${current_link}.next" "${current_link}"
 install -m 0644 deploy/systemd/robinhood-pair-grid.service /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-grid.timer /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-grid-alert@.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-grid-key-check.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-grid-status.service /etc/systemd/system/
 install -m 0600 deploy/runtime.env.example /etc/robinhood-pair-grid/runtime.env.example
 
 systemctl daemon-reload

@@ -26,7 +26,7 @@ timer. It does not create, overwrite or arm credentials.
 Create the encrypted credential on the destination host so systemd binds it to that host:
 
 ```bash
-sudo systemd-creds encrypt - /etc/credstore.encrypted/robinhood-pair-grid-private-key
+sudo systemd-creds encrypt --name=pair-grid-private-key - /etc/credstore.encrypted/pair-grid-private-key
 ```
 
 Pipe the value through an encrypted SSH session; do not paste it into shell history, argv, environment or
@@ -38,8 +38,10 @@ public address.
 ```bash
 systemctl is-enabled robinhood-pair-grid.timer
 systemctl is-active robinhood-pair-grid.timer
-sudo -u pair-grid npm run key-check
-sudo -u pair-grid npm run status
+sudo systemctl start robinhood-pair-grid-key-check.service
+sudo systemctl start robinhood-pair-grid-status.service
+sudo journalctl -u robinhood-pair-grid-key-check.service --no-pager -n 30
+sudo journalctl -u robinhood-pair-grid-status.service --no-pager -n 100
 systemctl cat robinhood-pair-grid.service robinhood-pair-grid.timer
 journalctl -u robinhood-pair-grid.service --no-pager -n 100
 ```

@@ -1,0 +1,23 @@
+[Unit]
+Description=Read back the Robinhood PAIR grid chain and local state
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=pair-grid
+Group=pair-grid
+WorkingDirectory=/opt/robinhood-pair-grid/current
+Environment=PAIR_GRID_RUN_DIR=/var/lib/robinhood-pair-grid
+EnvironmentFile=/etc/robinhood-pair-grid/runtime.env
+ExecStart=/usr/local/bin/node scripts/pair-grid.mjs status
+StateDirectory=robinhood-pair-grid
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/robinhood-pair-grid
+CapabilityBoundingSet=
