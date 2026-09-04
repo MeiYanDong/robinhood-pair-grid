@@ -21,3 +21,9 @@ Acceptance: Linux reads an encrypted systemd credential; deployed code and state
 passes credential and read-only chain checks; the timer and live arm remain disabled.
 
 Current activation blocker: [ADR 0003](../adr/0003-upstream-sdk-dependency-risk.md).
+
+## Story 5 - Harden and prove the unarmed host
+
+Acceptance: password authentication and SSH forwarding are disabled; unused public web rules are removed;
+the exact release, credential identity, chain state, timer state and live arm are read back. Any missing stable
+SSH allowlist, hardware-backed credential protection or external alert delivery remains an explicit open gap.
