@@ -37,6 +37,24 @@ wallet address, transaction hashes and provider request identifiers.
   The host firewall remains inactive to preserve recovery. A stable VPN/bastion allowlist is still required to
   close this gap.
 
+## Repository and delivery controls
+
+- The source is public at [MeiYanDong/robinhood-pair-grid](https://github.com/MeiYanDong/robinhood-pair-grid).
+- The protected `main` branch requires an up-to-date pull request with successful `verify`, `secret-scan` and
+  `dependency-review` checks. The rule applies to administrators, requires linear history and resolved
+  conversations, and rejects force pushes and branch deletion.
+- [Push CI run 33842845619](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33842845619)
+  passed formatting, lint, shell syntax, type checking, 26 tests with coverage gates, the production critical
+  audit, systemd validation and secret scanning.
+- [Manual CI run 33844699214](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33844699214)
+  passed a full-history gitleaks scan as a separate job as well as the complete verify job.
+- [Pull request 11](https://github.com/MeiYanDong/robinhood-pair-grid/pull/11) passed independent verify,
+  secret-scan and dependency-review jobs for the CI split and critical transitive dependency patch.
+- [Release run 33843165736](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33843165736)
+  accepted the exact deployed commit only after verifying that it belongs to `main`. Its downloaded artifact
+  passed its embedded checksum, and its SHA256 exactly matched the artifact already deployed on the server.
+- Private vulnerability reporting, Dependabot alerts and automated security fixes are enabled.
+
 ## Open production blockers
 
 - Production dependencies report 16 low, 4 moderate, 10 high and 0 critical advisories. See
@@ -44,6 +62,6 @@ wallet address, transaction hashes and provider request identifiers.
 - The systemd credential is host-bound but the host has no usable TPM and the root filesystem is not encrypted;
   root or full-disk compromise remains able to reach signing material.
 - Failure handling writes high-priority journald entries, but no external notification channel is configured.
-- GitHub Actions and protected-branch evidence must be captured after the public repository exists.
+- Port 22 still needs a stable VPN or bastion egress before it can be safely allowlisted.
 
 Therefore this is a verified **unarmed deployment**, not an activated or production-safe trading service.

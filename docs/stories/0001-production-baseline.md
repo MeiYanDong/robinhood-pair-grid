@@ -13,7 +13,7 @@ canonical recovery tests; unhalt remains manual.
 ## Story 3 - Establish merge gates
 
 Acceptance: one command runs format, lint, type checking and coverage; pull requests run the same checks plus
-secret scanning; the protected branch requires the successful CI check.
+secret scanning and critical dependency review; the protected branch requires all three successful checks.
 
 ## Story 4 - Deploy unarmed
 
