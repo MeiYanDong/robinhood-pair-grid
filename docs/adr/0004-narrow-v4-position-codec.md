@@ -14,6 +14,11 @@ PositionManager calldata encoding. No current upstream version removes the broad
 `npm audit fix --force` proposed installing an older major SDK version. That would be a transaction-encoding
 change without evidence and was rejected.
 
+During pull-request validation, npm's Bulk Advisory request repeatedly fell back to the retired Quick Audit
+endpoint and timed out. npm documents that fallback behavior, and the failure was reproduced on both the local
+machine and GitHub-hosted runners. A security gate whose transport is known to be unavailable cannot provide a
+reliable merge decision.
+
 ## Decision
 
 - Keep `viem` as the only direct production dependency.
@@ -23,9 +28,12 @@ change without evidence and was rejected.
 - Lock behavior with fixed vectors generated from `@uniswap/v4-sdk@2.3.3`: pool id, BUY and SELL liquidity,
   boundary composition, burn minimums and byte-identical mint/increase/remove calldata hashes.
 - Require a canonical-chain `eth_call` of the current full-removal calldata before deploying this migration.
-- Raise `npm audit --omit=dev` and GitHub Dependency Review to fail on high or critical advisories.
-- Retry transient npm audit transport failures a bounded number of times, but accept only a complete
-  vulnerability result; exhausted retries remain a failed gate.
+- Enumerate the exact non-dev package versions from `package-lock.json`, including production peer entries, and
+  query the official GitHub Advisory Database `affects=package@version` API separately for high and critical
+  reviewed advisories.
+- Validate every response shape, paginate boundedly and retry transport failures boundedly. A high or critical
+  finding, malformed response, exhausted retry or pagination overflow fails the gate.
+- Keep GitHub Dependency Review at the high-severity threshold as an independent pull-request check.
 - Keep deployment manual and unarmed; this dependency decision does not authorize signing or timer enablement.
 
 ## Consequences
@@ -33,4 +41,5 @@ change without evidence and was rejected.
 The production install no longer carries the unrelated Hardhat/ethers v5 toolchain. The project now owns a
 small amount of protocol math and ABI encoding, so protocol upgrades or PositionManager changes require new
 compatibility vectors and simulation evidence. Golden tests prevent unnoticed output drift but are not a
-substitute for chain simulation and post-deployment readback.
+substitute for chain simulation and post-deployment readback. The current-tree vulnerability gate now depends
+on GitHub's public Advisory API instead of npm's audit transport; API unavailability remains fail-closed.

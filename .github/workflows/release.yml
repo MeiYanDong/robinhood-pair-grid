@@ -28,7 +28,10 @@ jobs:
       - name: Install locked dependencies without duplicate audit
         run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run verify
-      - run: npm run audit:prod
+      - name: Block high or critical production dependency advisories
+        run: npm run audit:prod
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - name: Require an exact full commit SHA
         run: |
           test "$(git rev-parse HEAD)" = "${{ inputs.ref }}"

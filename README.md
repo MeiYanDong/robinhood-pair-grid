@@ -83,9 +83,9 @@ PAIR_GRID_UNHALT_CONFIRM=I_UNDERSTAND npm run clear-halt
 
 ## 当前发布策略
 
-PR 必须通过格式、lint、类型、单元测试、覆盖率、secret scan 和 high dependency review。
-发布工作流只生成带 SHA256 的不可变工件；生产部署是人工受控动作。仓库合并或发布不会自动
-启用钱包签名。
+PR 必须通过格式、lint、类型、单元测试、覆盖率、secret scan、high dependency review，以及
+针对锁定生产依赖版本的 GitHub Advisory Database high/critical 扫描。发布工作流只生成带 SHA256
+的不可变工件；生产部署是人工受控动作。仓库合并或发布不会自动启用钱包签名。
 
 ## License
 

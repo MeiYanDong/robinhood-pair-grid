@@ -28,6 +28,8 @@ jobs:
       - run: npm run verify
       - name: Block high or critical production dependency advisories
         run: npm run audit:prod
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - run: bash -n deploy/install-release.sh
       - run: systemd-analyze verify deploy/systemd/*.service deploy/systemd/*.timer
 

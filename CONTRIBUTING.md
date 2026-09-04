@@ -14,6 +14,7 @@ Run before requesting review:
 ```bash
 npm ci
 npm run verify
+npm run audit:prod
 ```
 
 Use clear imperative commit subjects, preferably Conventional Commit prefixes such as `fix:`, `test:`,

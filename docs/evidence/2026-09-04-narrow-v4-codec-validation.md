@@ -2,7 +2,7 @@
 
 Date: 2026-09-04
 
-Status: Local implementation and pull-request CI validated; deployment pending
+Status: Local implementation and intermediate pull-request CI validated; final gate and deployment pending
 
 ## Scope
 
@@ -37,10 +37,10 @@ After a clean install with the old packages absent from `node_modules`:
 
 ```text
 npm run verify: PASS
-tests: 33 passed, 0 failed
-line coverage: 92.35%
-branch coverage: 68.85%
-function coverage: 97.26%
+tests: 39 passed, 0 failed
+line coverage: 92.28%
+branch coverage: 70.24%
+function coverage: 94.32%
 uniswap-v4-position.mjs line coverage: 97.45%
 ```
 
@@ -49,7 +49,7 @@ pull-request audit correctly found one high-severity advisory in the hoisted `ws
 lockfile was deduplicated so both `viem` and `isows` now resolve to the patched `ws@8.21.0`; a clean install then
 contained 87 total packages and 15 production packages.
 
-The final pull-request gates passed on commit `44bf13cd3edf9e457864a32851eb865dc25c7761`:
+The intermediate pull-request gates passed on commit `44bf13cd3edf9e457864a32851eb865dc25c7761`:
 
 - [CI run 33852780277](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33852780277): `verify`
   passed in 3m22s, including formatting, lint, shell syntax, type checking, 33 tests, coverage thresholds,
@@ -60,9 +60,24 @@ The final pull-request gates passed on commit `44bf13cd3edf9e457864a32851eb865dc
   passed at the high-severity threshold;
 - `secret-scan`: passed.
 
-The retry wrapper only accepts a structurally complete npm vulnerability result, still fails immediately on a
-real high/critical result, and fails after exhausted transport retries. CI and release installation also disable
-npm's duplicate install-time audit; the explicit fail-closed audit remains the single security gate.
+Subsequent identical npm audit requests repeatedly fell back to the retired Quick Audit endpoint and timed out.
+This matches [npm's documented Bulk-to-Quick fallback](https://docs.npmjs.com/cli/v11/commands/npm-audit/#audit-endpoints)
+and the observed npm registry transport failure. The gate was therefore moved to GitHub's official
+[`affects=package@version` global advisory API](https://docs.github.com/en/rest/security-advisories/global-advisories):
+
+- the scanner derives the exact non-dev package-version set from `package-lock.json`, including production peer
+  entries;
+- separate high and critical queries use bounded pagination and retries, validate every response and fail closed
+  on malformed or incomplete data;
+- six tests cover package-tree selection, query construction, response validation, blocking findings, retry and
+  incomplete-result failure;
+- a live query of the current 14 production package versions returned 0 high and 0 critical findings;
+- a separate live control query for vulnerable `ws@8.18.0` found `GHSA-96hv-2xvq-fx4p`, proving the gate was not
+  returning an unconditional empty result.
+
+CI and release installation disable npm's duplicate install-time audit; the explicit fail-closed advisory scan
+remains the single current-tree security gate. Final pull-request CI for this transport replacement remains
+pending at this evidence snapshot.
 
 ## Canonical-chain no-broadcast evidence
 

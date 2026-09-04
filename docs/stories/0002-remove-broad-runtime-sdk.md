@@ -13,7 +13,8 @@ ranges, invalid sides and ambiguous mint/increase options fail closed.
 ## Story 3 - Remove the production dependency surface
 
 Acceptance: a clean `npm ci` succeeds without either Uniswap SDK package; `npm ls --omit=dev --all` contains
-only the reviewed `viem` tree; production audit and dependency review fail on high or critical findings.
+only the reviewed `viem` tree; the locked production package versions are checked against GitHub's advisory
+database; production audit and dependency review fail on high or critical findings or incomplete results.
 
 ## Story 4 - Prove the chain boundary without broadcasting
 
