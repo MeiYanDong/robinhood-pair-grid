@@ -7,12 +7,14 @@ wallet address, transaction hashes and provider request identifiers.
 
 ## Immutable release
 
-- Deployed commit: `8ee56deb718a9ffbc412a50a4960c124a8389463`.
-- Deployment artifact SHA256: `31a87585bd9ac53174a5a07297d1fc6273c87502118e6c4ccf7f9a5b6ef3f36e`.
+- Deployed commit: `b8d99be96efe952aa538c0e6ce65170130ce2371`.
+- Deployment artifact SHA256: `d4a9c8191b5ee49a4363e37b53e060902b1a66d0039658daeb2a40a37505c01c`.
 - Active symlink resolved to the release directory named by that exact commit.
 - Runtime: Node.js `v22.23.2`, npm `10.9.8`.
 - The Node.js archive matched the official SHA256 entry before extraction.
 - The release installer completed all 26 Node tests and syntax checks before switching the active symlink.
+- The installed production tree resolved every `@openzeppelin/contracts` path to the patched
+  `3.4.2-solc-0.7` build.
 
 ## Runtime readback
 
@@ -43,14 +45,14 @@ wallet address, transaction hashes and provider request identifiers.
 - The protected `main` branch requires an up-to-date pull request with successful `verify`, `secret-scan` and
   `dependency-review` checks. The rule applies to administrators, requires linear history and resolved
   conversations, and rejects force pushes and branch deletion.
-- [Push CI run 33842845619](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33842845619)
+- [Main CI run 33845407734](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33845407734)
   passed formatting, lint, shell syntax, type checking, 26 tests with coverage gates, the production critical
   audit, systemd validation and secret scanning.
 - [Manual CI run 33844699214](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33844699214)
   passed a full-history gitleaks scan as a separate job as well as the complete verify job.
 - [Pull request 11](https://github.com/MeiYanDong/robinhood-pair-grid/pull/11) passed independent verify,
   secret-scan and dependency-review jobs for the CI split and critical transitive dependency patch.
-- [Release run 33843165736](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33843165736)
+- [Release run 33845828473](https://github.com/MeiYanDong/robinhood-pair-grid/actions/runs/33845828473)
   accepted the exact deployed commit only after verifying that it belongs to `main`. Its downloaded artifact
   passed its embedded checksum, and its SHA256 exactly matched the artifact already deployed on the server.
 - Private vulnerability reporting, Dependabot alerts and automated security fixes are enabled.
