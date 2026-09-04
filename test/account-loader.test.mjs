@@ -45,8 +45,8 @@ test('rejects a credential whose signer is not the configured wallet', () => {
       loadSignerAccount({
         expectedWallet: '0x0000000000000000000000000000000000000001',
         keychainService: 'test',
-        environment: {},
-        keychainReader: () => DEVELOPMENT_PRIVATE_KEY,
+        environment: { CREDENTIALS_DIRECTORY: '/synthetic-systemd-credentials' },
+        credentialReader: () => DEVELOPMENT_PRIVATE_KEY,
       }),
     /地址不匹配/,
   )
