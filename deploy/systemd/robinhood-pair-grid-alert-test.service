@@ -1,5 +1,5 @@
 [Unit]
-Description=Deliver an external PAIR grid keeper failure alert for %i
+Description=Send a synthetic non-signing PAIR grid external alert
 Wants=network-online.target
 After=network-online.target
 
@@ -10,7 +10,7 @@ Group=pair-grid
 WorkingDirectory=/opt/robinhood-pair-grid/current
 Environment=NODE_ENV=production
 LoadCredentialEncrypted=pair-grid-alert:/etc/credstore.encrypted/pair-grid-alert
-ExecStart=/usr/local/bin/node scripts/pair-grid-alert.mjs service-failure %i
+ExecStart=/usr/local/bin/node scripts/pair-grid-alert.mjs synthetic-test
 UMask=0077
 NoNewPrivileges=true
 PrivateDevices=true
@@ -28,5 +28,3 @@ SystemCallArchitectures=native
 CapabilityBoundingSet=
 LockPersonality=true
 TimeoutStartSec=45s
-SyslogIdentifier=robinhood-pair-grid-alert
-SyslogLevel=alert

@@ -3,6 +3,18 @@
 All notable changes are documented here. This project follows semantic versioning while it remains an
 operator-managed service.
 
+## [0.3.0] - 2026-09-04
+
+### Added
+
+- a signed Feishu custom-bot alert transport and an independent monitor for service failures, persistent
+  `HALTED` state and repeated canonical readback failures.
+
+### Changed
+
+- alert and wallet credentials are isolated in different systemd units;
+- release installation preserves a previously enabled alert monitor but always disables the trading timer.
+
 ## [0.2.0] - 2026-09-04
 
 ### Added

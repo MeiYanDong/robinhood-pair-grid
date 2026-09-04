@@ -10,6 +10,37 @@ npm run status
 `status` is read-only and does not require a credential. Confirm chain ID, `latest === pending === expected`,
 NFT owner, liquidity and local status.
 
+## External alerts
+
+The independent monitor runs every five minutes after its own timer is enabled. It routes:
+
+- every Keeper systemd failure immediately;
+- a durable `HALTED` sentinel immediately and again after six hours while it remains unresolved;
+- chain readback after three consecutive failures and again after six hours while failures continue.
+
+The Feishu credential is separate from the wallet credential. Provider acceptance is logged only as
+`EXTERNAL_ALERT_ACKNOWLEDGED` with an event ID, `providerCode: 0` and timestamp; webhook and signing secret must
+never appear in the journal.
+
+For a synthetic test:
+
+```bash
+sudo systemctl start robinhood-pair-grid-alert-test.service
+sudo journalctl -u robinhood-pair-grid-alert-test.service --no-pager -n 30
+```
+
+Confirm both the Feishu message and provider acknowledgement. The synthetic unit cannot load the wallet key and
+does not invoke any strategy command.
+
+Escalation:
+
+1. For `service-failure`, keep the trading timer disabled and inspect both the keeper and alert journals.
+2. For `persistent-halted`, follow the HALTED recovery below; never clear the sentinel just to silence alerts.
+3. For `repeated-readback-failure`, verify network, DNS, RPC and canonical chain state before trusting local
+   state or taking any write action.
+4. If alert delivery itself fails, use the alert unit journal and Alibaba Cloud control plane as the fallback;
+   rotate the Feishu webhook and signing secret if either may have leaked, then repeat the synthetic proof.
+
 ## HALTED recovery
 
 1. Keep the systemd timer disabled.

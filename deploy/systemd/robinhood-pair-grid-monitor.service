@@ -1,7 +1,8 @@
 [Unit]
-Description=Deliver an external PAIR grid keeper failure alert for %i
+Description=Monitor PAIR grid HALTED state and canonical readback
 Wants=network-online.target
 After=network-online.target
+OnFailure=robinhood-pair-grid-alert@%n.service
 
 [Service]
 Type=oneshot
@@ -9,8 +10,12 @@ User=pair-grid
 Group=pair-grid
 WorkingDirectory=/opt/robinhood-pair-grid/current
 Environment=NODE_ENV=production
+Environment=PAIR_GRID_RUN_DIR=/var/lib/robinhood-pair-grid
+EnvironmentFile=/etc/robinhood-pair-grid/runtime.env
 LoadCredentialEncrypted=pair-grid-alert:/etc/credstore.encrypted/pair-grid-alert
-ExecStart=/usr/local/bin/node scripts/pair-grid-alert.mjs service-failure %i
+ExecStart=/usr/local/bin/node scripts/pair-grid-alert.mjs monitor-once
+StateDirectory=robinhood-pair-grid
+StateDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=true
 PrivateDevices=true
@@ -21,12 +26,14 @@ ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
+ReadWritePaths=/var/lib/robinhood-pair-grid
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictRealtime=true
 RestrictSUIDSGID=true
 SystemCallArchitectures=native
 CapabilityBoundingSet=
 LockPersonality=true
-TimeoutStartSec=45s
-SyslogIdentifier=robinhood-pair-grid-alert
-SyslogLevel=alert
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=multi-user.target
