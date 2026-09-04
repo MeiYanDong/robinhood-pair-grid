@@ -28,4 +28,5 @@ decision and is not implied by resolving that dependency tree.
 
 Acceptance: password authentication and SSH forwarding are disabled; unused public web rules are removed;
 the exact release, credential identity, chain state, timer state and live arm are read back. Any missing stable
-SSH allowlist, hardware-backed credential protection or external alert delivery remains an explicit open gap.
+SSH allowlist or hardware-backed credential protection remains an explicit open gap. External alert delivery is
+closed by the [Feishu deployment evidence](../evidence/2026-09-04-feishu-alert-deployment.md).

@@ -21,4 +21,5 @@ unacknowledged alert.
 
 Acceptance: install the alert credential outside Git and argv, run the synthetic unit on the SWAS host, observe
 the message in the selected Feishu group and capture a redacted provider `code: 0` acknowledgement. Only then
-enable the monitor timer. This story is intentionally incomplete until the operator supplies the channel.
+enable the monitor timer. Completed with provider, UI and recurring timer readback in the
+[deployment evidence](../evidence/2026-09-04-feishu-alert-deployment.md).

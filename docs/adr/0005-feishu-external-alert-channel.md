@@ -1,6 +1,6 @@
 # ADR 0005: Feishu external alert channel
 
-Status: Accepted for implementation; live delivery pending operator credential
+Status: Accepted and deployed unarmed
 
 Date: 2026-09-04
 
@@ -26,7 +26,8 @@ alerts are deduplicated for six hours; failed delivery remains pending for the n
 
 ## Consequences
 
-The monitor timer may be enabled independently of the trading timer. Installing this code does not configure a
-webhook, enable monitoring or arm trading. Issue 8 remains open until an operator creates the group bot, enables
-signature verification, installs the encrypted credential, receives a synthetic alert in Feishu and preserves
-the provider `code: 0` acknowledgement without recording either secret.
+The monitor timer may be enabled independently of the trading timer. Installing this code alone does not
+configure a webhook, enable monitoring or arm trading. The live credential, synthetic provider acknowledgement
+and recurring timer proof are recorded in the
+[deployment evidence](../evidence/2026-09-04-feishu-alert-deployment.md); trading remains separately gated and
+unarmed.
