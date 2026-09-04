@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { planMonitorRun, markMonitorDelivery } from '../lib/alert-monitor.mjs'
+import { assertCanonicalReadbackReport, planMonitorRun, markMonitorDelivery } from '../lib/alert-monitor.mjs'
 import { createAlertEvent, deliverFeishuAlert, loadFeishuCredential } from '../lib/feishu-alerts.mjs'
 import { redactSensitiveText } from '../lib/runtime-guards.mjs'
 
@@ -80,10 +80,7 @@ async function readCanonicalStatus() {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     })
-    const result = JSON.parse(stdout)
-    if (result.status !== 'OBSERVED_READ_ONLY') {
-      throw new Error(`status 返回意外状态 ${String(result.status)}`)
-    }
+    assertCanonicalReadbackReport(JSON.parse(stdout))
     return { ok: true }
   } catch (error) {
     return { ok: false, error: redactSensitiveText(error?.message || String(error)) }
