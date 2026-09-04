@@ -27,6 +27,6 @@ jobs:
         run: npm run audit:prod
       - run: bash -n deploy/install-release.sh
       - run: systemd-analyze verify deploy/systemd/*.service deploy/systemd/*.timer
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
