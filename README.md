@@ -28,6 +28,7 @@ Gas、滑点以及自动化故障。
 - pending/意外 nonce、NFT owner/liquidity 不一致或回执未知都会持久化为 `HALTED`。
 - 进程锁防止 timer、人工命令和其他进程并发使用同一状态与 nonce。
 - `reconcile` 只接受本地广播记录与链上成功回执一一对应的恢复证据，不盲目重试交易。
+- Keeper service 失败、持久 `HALTED` 和连续三次链上读回失败通过独立飞书通道告警；告警进程不加载交易私钥。
 - 生产依赖只保留 `viem`；本地 v4 头寸数学与 PositionManager 编码必须通过旧版 SDK 的固定
   数值和 calldata 哈希兼容向量。
 
@@ -54,6 +55,8 @@ npm run status          # 链上状态与本地账本对比
 npm run reconcile       # 用 canonical receipt 恢复中断状态，不签名
 npm run halt-status     # 查看持久化停机状态
 npm run clear-halt      # 对账后显式解除停机
+npm run alert:monitor   # 只读健康检查；达到阈值才外部告警
+npm run alert:test      # 合成告警；不加载交易私钥
 
 npm run enter-buy       # 写交易；需要 PAIR_GRID_LIVE_ARM=1
 npm run resume-buy      # 写交易；需要 PAIR_GRID_LIVE_ARM=1

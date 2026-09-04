@@ -8,6 +8,7 @@
 /var/lib/robinhood-pair-grid/                 private state and audit ledger
 /etc/robinhood-pair-grid/runtime.env          root-owned public runtime identity
 /etc/credstore.encrypted/                     encrypted wallet credential
+/etc/credstore.encrypted/pair-grid-alert      encrypted Feishu alert credential
 ```
 
 ## Install a release
@@ -37,6 +38,37 @@ The host-bound systemd credential is defense in depth, not a hardware security m
 usable TPM and encrypted root disk, root access or a complete disk image remains inside the signing-key threat
 model.
 
+## External alert credential
+
+Create a Feishu custom group bot, enable signature verification and copy both values into this JSON shape:
+
+```json
+{
+  "provider": "feishu-custom-bot",
+  "webhookUrl": "https://open.feishu.cn/open-apis/bot/v2/hook/REDACTED",
+  "signingSecret": "REDACTED"
+}
+```
+
+Encrypt it through standard input on the destination host. Do not place either value in shell history,
+environment variables, process arguments, GitHub secrets or the public evidence file:
+
+```bash
+sudo systemd-creds encrypt --name=pair-grid-alert - /etc/credstore.encrypted/pair-grid-alert
+```
+
+The bot should use both signature verification and the SWAS public egress IP allowlist. Test the independent
+path before enabling its monitor timer:
+
+```bash
+sudo systemctl start robinhood-pair-grid-alert-test.service
+sudo journalctl -u robinhood-pair-grid-alert-test.service --no-pager -n 30
+```
+
+Success requires the test message to be visible in the selected Feishu group and a redacted
+`EXTERNAL_ALERT_ACKNOWLEDGED` record with `providerCode: 0`. That response proves provider acceptance, not that a
+human read the message. The alert service and monitor never load the wallet credential.
+
 ## SSH administration
 
 Install the reviewed hardening fragment separately from the application release, validate it before reload,
@@ -61,6 +93,8 @@ recovery.
 ```bash
 systemctl is-enabled robinhood-pair-grid.timer
 systemctl is-active robinhood-pair-grid.timer
+systemctl is-enabled robinhood-pair-grid-monitor.timer
+systemctl is-active robinhood-pair-grid-monitor.timer
 sudo systemctl start robinhood-pair-grid-key-check.service
 sudo systemctl start robinhood-pair-grid-status.service
 sudo journalctl -u robinhood-pair-grid-key-check.service --no-pager -n 30
@@ -71,3 +105,15 @@ journalctl -u robinhood-pair-grid.service --no-pager -n 100
 
 Expected initial timer state is `disabled` and `inactive`. A successful status command is readback evidence,
 not evidence that automatic trading is active.
+
+The installer always disables the trading timer. It preserves an already-enabled monitor timer across later
+releases but does not enable monitoring on first install. After the external synthetic proof succeeds, enable
+only the monitor:
+
+```bash
+sudo systemctl enable --now robinhood-pair-grid-monitor.timer
+systemctl is-enabled robinhood-pair-grid.timer
+systemctl is-active robinhood-pair-grid.timer
+```
+
+Both final trading-timer checks must still report `disabled` and `inactive`.
