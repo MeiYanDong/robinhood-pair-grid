@@ -25,7 +25,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - name: Install locked dependencies without duplicate audit
+        run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run verify
       - run: npm run audit:prod
       - name: Require an exact full commit SHA
