@@ -19,3 +19,5 @@ secret scanning; the protected branch requires the successful CI check.
 
 Acceptance: Linux reads an encrypted systemd credential; deployed code and state are read back; the service
 passes credential and read-only chain checks; the timer and live arm remain disabled.
+
+Current activation blocker: [ADR 0003](../adr/0003-upstream-sdk-dependency-risk.md).

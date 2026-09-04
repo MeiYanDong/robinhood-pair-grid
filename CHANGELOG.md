@@ -13,6 +13,7 @@ operator-managed service.
 - macOS Keychain and Linux systemd credential loaders;
 - format, lint, JavaScript type checking, coverage thresholds and GitHub CI;
 - public-repository hygiene, technical specification, ADRs, runbook and SWAS deployment templates.
+- a CI gate for critical production dependency advisories and an explicit upstream SDK risk record.
 
 ### Changed
 

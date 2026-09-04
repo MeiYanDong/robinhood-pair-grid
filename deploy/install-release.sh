@@ -35,7 +35,7 @@ if [[ ! -d ${release_dir} ]]; then
 fi
 
 cd "${release_dir}"
-npm ci --omit=dev --ignore-scripts
+npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 npm test
 node --check scripts/pair-grid.mjs
 chown -R root:pair-grid "${release_dir}"

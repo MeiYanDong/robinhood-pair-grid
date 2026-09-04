@@ -13,6 +13,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "lint:deploy": "bash -n deploy/install-release.sh",
+    "audit:prod": "npm audit --omit=dev --audit-level=critical",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='lib/**/*.mjs' --test-coverage-lines=85 --test-coverage-branches=60 --test-coverage-functions=90",
