@@ -9,6 +9,8 @@
 /etc/robinhood-pair-grid/runtime.env          root-owned public runtime identity
 /etc/credstore.encrypted/                     encrypted wallet credential
 /etc/credstore.encrypted/pair-grid-alert      encrypted Feishu alert credential
+/etc/credstore.encrypted/pair-usdg-martingale-private-key
+                                               isolated martingale wallet credential
 ```
 
 ## Install a release
@@ -37,6 +39,16 @@ public address.
 The host-bound systemd credential is defense in depth, not a hardware security module. On a host without a
 usable TPM and encrypted root disk, root access or a complete disk image remains inside the signing-key threat
 model.
+
+The isolated martingale wallet uses a separate credential name and never shares the legacy grid signer:
+
+```bash
+sudo systemd-creds encrypt --name=pair-usdg-martingale-private-key - \
+  /etc/credstore.encrypted/pair-usdg-martingale-private-key
+```
+
+Transfer its bootstrap and live state to `/var/lib/robinhood-pair-grid/` through the encrypted SSH channel,
+set owner `pair-grid:pair-grid` and mode `0600`, and keep both files outside the release artifact.
 
 ## External alert credential
 
@@ -103,6 +115,12 @@ sudo journalctl -u robinhood-pair-grid-key-check.service --no-pager -n 30
 sudo journalctl -u robinhood-pair-grid-status.service --no-pager -n 100
 systemctl cat robinhood-pair-grid.service robinhood-pair-grid.timer
 journalctl -u robinhood-pair-grid.service --no-pager -n 100
+sudo systemctl start robinhood-pair-usdg-martingale-key-check.service
+sudo systemctl start robinhood-pair-usdg-martingale-status.service
+sudo systemctl start robinhood-pair-usdg-martingale.service
+sudo journalctl -u robinhood-pair-usdg-martingale.service --no-pager -n 100
+systemctl is-enabled robinhood-pair-usdg-martingale.timer
+systemctl is-active robinhood-pair-usdg-martingale.timer
 ```
 
 Expected initial timer state is `disabled` and `inactive`. A successful status command is readback evidence,
@@ -119,3 +137,16 @@ systemctl is-active robinhood-pair-grid.timer
 ```
 
 Both final trading-timer checks must still report `disabled` and `inactive`.
+
+For an explicitly authorized isolated deployment, the one-shot service must first return a healthy `NO_ACTION`
+or a fully evidenced rotation. Then enable its independent timer and read it back:
+
+```bash
+sudo systemctl enable --now robinhood-pair-usdg-martingale.timer
+systemctl is-enabled robinhood-pair-usdg-martingale.timer
+systemctl is-active robinhood-pair-usdg-martingale.timer
+systemctl list-timers robinhood-pair-usdg-martingale.timer --no-pager
+```
+
+This enables persistent automatic signing only for the isolated wallet. It does not enable the legacy
+`robinhood-pair-grid.timer`.

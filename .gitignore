@@ -15,8 +15,5 @@ coverage/
 .eslintcache
 *.tmp
 *.lock
-runs/*.json
-runs/*.jsonl
-runs/*.lock
-runs/*.halted.json
+runs/**
 !.gitkeep

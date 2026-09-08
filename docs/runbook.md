@@ -10,6 +10,16 @@ npm run status
 `status` is read-only and does not require a credential. Confirm chain ID, `latest === pending === expected`,
 NFT owner, liquidity and local status.
 
+For the isolated PAIR/USDG strategy:
+
+```bash
+npm run martingale-status
+npm run martingale-reconcile
+```
+
+Normal output has five active NFTs, matching latest/pending/expected nonce, no SPY and no pending rotation. The
+systemd timer invokes `martingale-keeper-once` every 30 seconds and does not require an interactive signature.
+
 ## External alerts
 
 The independent monitor runs every five minutes after its own timer is enabled. It routes:
@@ -62,6 +72,14 @@ Never delete state, the lock or HALTED files to force progress. Never retry a ha
 Activation is separate from deployment. Set `PAIR_GRID_LIVE_ARM=1` in the root-owned runtime environment,
 then run one manual `keeper-once` while observing logs. Enable the timer only after that command returns a
 healthy `NO_ACTION` or a fully evidenced rotation.
+
+The isolated strategy uses `PAIR_MARTINGALE_LIVE_ARM=I_AUTHORIZE_FINITE_MARTINGALE`. This is a persistent
+machine guard, not a prompt. After the dedicated key check, status readback and one-shot keeper all pass, enable
+`robinhood-pair-usdg-martingale.timer`. Do not enable the legacy timer as a side effect.
+
+If the martingale reports `WAITING_NO_ACTION`, inspect gas balance or UTC limits and leave the state intact. If
+it persists a hard halt, disable only its timer, preserve the signed-intent ledger, run reconciliation against
+canonical receipts, and never delete the pending state to force a retry.
 
 ## Emergency exit
 

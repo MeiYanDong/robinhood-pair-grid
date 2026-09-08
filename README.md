@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/MeiYanDong/robinhood-pair-grid/actions/workflows/ci.yml/badge.svg)](https://github.com/MeiYanDong/robinhood-pair-grid/actions/workflows/ci.yml)
 
-Robinhood Chain 上 PAIR/SPY Uniswap v4 单边区间网格。策略在同一个池中交替维护 BUY 和 SELL
-两个方向的 NFT；任何时刻只允许一条腿持有流动性。
+Robinhood Chain 上的 PAIR 单边区间策略运行时。目前包含原 PAIR/SPY 单仓网格，以及隔离钱包中的
+五档 PAIR/USDG 有限马丁 LP。后者按档位独立执行 USDG-only BUY → PAIR-only SELL → BUY。
 
 本仓库公开源代码、测试和部署模板，但不包含钱包地址、私钥、运行状态、服务器地址或告警凭证。
 `package.json` 的 `private: true` 仅用于防止误发布到 npm。
@@ -17,6 +17,10 @@ Robinhood Chain 上 PAIR/SPY Uniswap v4 单边区间网格。策略在同一个�
 
 这不是“无风险网格”。收益来自 LP 手续费，风险包括单边库存、LVR/无常损失、合约与链风险、
 Gas、滑点以及自动化故障。
+
+PAIR/USDG 有限马丁额外遵守：只使用已核验的手续费本金，90% 按 10/15/20/25/30 部署、10%
+储备；双区块达到 95% 转换后每次只轮转一档；卖出价覆盖真实净成本和最低利润；盈利不自动加仓。
+详见 [有限马丁规格](docs/specs/pair-usdg-finite-martingale.md)。
 
 ## Fail-closed 边界
 
@@ -58,6 +62,11 @@ npm run clear-halt      # 对账后显式解除停机
 npm run alert:monitor   # 只读健康检查；达到阈值才外部告警
 npm run alert:test      # 合成告警；不加载交易私钥
 
+npm run martingale-status       # 五档链上状态与脱敏账本
+npm run martingale-key-check    # 验证隔离凭据反推地址
+npm run martingale-keeper-once  # 自动判断并至多轮转一档
+npm run martingale-reconcile    # 恢复已持久化的同哈希换腿
+
 npm run enter-buy       # 写交易；需要 PAIR_GRID_LIVE_ARM=1
 npm run resume-buy      # 写交易；需要 PAIR_GRID_LIVE_ARM=1
 npm run keeper-once     # 健康且完全转换时才切腿
@@ -65,6 +74,9 @@ npm run rotate          # 写交易；需要 PAIR_GRID_LIVE_ARM=1
 npm run resume-rotate   # 写交易；需要 PAIR_GRID_LIVE_ARM=1
 npm run exit            # 撤出流动性，不自动兑换
 ```
+
+服务器中的 martingale arm 是一次性部署防误开关，不是逐笔授权。专用 timer 启用后，满足策略和
+canonical 门禁的交易由隔离钱包自动签名。
 
 解除 `HALTED` 必须先完成 `npm run reconcile`，然后临时设置：
 
@@ -81,7 +93,8 @@ PAIR_GRID_UNHALT_CONFIRM=I_UNDERSTAND npm run clear-halt
 3. 本地状态和预期 nonce 对账；
 4. 服务器 systemd 与已部署 commit 的运行时回读。
 
-详细设计见 [技术规格](docs/specs/pair-grid.md)，恢复与运维见
+详细设计见 [PAIR/SPY 技术规格](docs/specs/pair-grid.md) 和
+[PAIR/USDG 有限马丁规格](docs/specs/pair-usdg-finite-martingale.md)，恢复与运维见
 [运行手册](docs/runbook.md)，部署方式见 [部署文档](docs/deployment.md)。
 
 ## 当前发布策略

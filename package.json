@@ -1,6 +1,6 @@
 {
   "name": "robinhood-pair-grid",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Fail-closed single-sided PAIR/SPY range grid for Robinhood Chain",
   "private": true,
   "license": "MIT",
@@ -32,7 +32,15 @@
     "reconcile": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs reconcile",
     "halt-status": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs halt-status",
     "clear-halt": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs clear-halt",
-    "exit": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs exit"
+    "exit": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs exit",
+    "martingale-plan": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs plan",
+    "martingale-preflight": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs preflight",
+    "martingale-enter": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs enter",
+    "martingale-resume": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs resume",
+    "martingale-status": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs status",
+    "martingale-key-check": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs key-check",
+    "martingale-keeper-once": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs keeper-once",
+    "martingale-reconcile": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs reconcile"
   },
   "dependencies": {
     "viem": "2.56.3"
