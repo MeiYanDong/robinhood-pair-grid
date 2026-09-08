@@ -19,17 +19,20 @@ import {
 
 import { loadSignerAccount } from '../lib/account-loader.mjs'
 import {
+  assertBuyRangeRespectsPriceFloor,
   buyFillAccounting,
   DEFAULT_FINITE_MARTINGALE_POLICY,
   decideNextVerifiedBandAction,
   directPairPriceAtTick,
   parseMarketEvidence,
+  planHardFloorBuyLadder,
   planInitialBuyLadder,
   planSellRange,
   positionConversionBps,
   sellFillAccounting,
 } from '../lib/finite-martingale.mjs'
 import { canonicalGasSpent, executePersistedTransaction } from '../lib/persisted-transaction.mjs'
+import { verifyRpcConsensus } from '../lib/rpc-consensus.mjs'
 import { parseBroadcastEndpoints, parseRpcEndpoints, rpcEndpointSummary } from '../lib/rpc-endpoints.mjs'
 import { StateStore } from '../lib/state-store.mjs'
 import {
@@ -63,6 +66,8 @@ const POOL_ID = DEFAULT_FINITE_MARTINGALE_POLICY.poolId
 const TICK_SPACING = DEFAULT_FINITE_MARTINGALE_POLICY.tickSpacing
 const POOL_FEE = DEFAULT_FINITE_MARTINGALE_POLICY.feePips
 const CONFIRMATION_DEPTH = 128n
+const REQUIRE_RPC_CONSENSUS = process.env.PAIR_MARTINGALE_REQUIRE_RPC_CONSENSUS === '1'
+const MAXIMUM_RPC_HEAD_DIVERGENCE = BigInt(process.env.PAIR_MARTINGALE_MAXIMUM_RPC_HEAD_DIVERGENCE || '128')
 const MINIMUM_FINAL_ETH_WEI = 3_500_000_000_000_000n
 const MAXIMUM_INITIAL_GAS_WEI = 1_000_000_000_000_000n
 const CONSERVATIVE_APPROVAL_GAS = 80_000n
@@ -71,6 +76,9 @@ const CONSERVATIVE_THREE_MINT_GAS = 1_100_000n
 const MAXIMUM_BUILD_FRICTION_BPS = 500
 const MINIMUM_DEPLOYMENT_UTILIZATION_BPS = 9_990n
 const ROTATION_REMOVE_SLIPPAGE_BPS = 100n
+const HARD_FLOOR_REBASE_FIRST_TICK = 319_300
+const HARD_FLOOR_REBASE_WIDTH_TICKS = Object.freeze([800, 700, 700, 800])
+const HARD_FLOOR_REBASE_BAND_IDS = Object.freeze(['B2', 'B3', 'B4', 'B5'])
 const MINIMUM_KEEPER_ETH_WEI = BigInt(process.env.PAIR_MARTINGALE_MINIMUM_ETH_WEI || '1000000000000000')
 const MAXIMUM_ROTATION_TRANSACTION_GAS_WEI = BigInt(
   process.env.PAIR_MARTINGALE_MAX_TRANSACTION_GAS_WEI || '750000000000000',
@@ -114,6 +122,12 @@ const publicClient = createPublicClient({
           { rank: false, retryCount: 1 },
         ),
 })
+const directReadClients = RPC_ENDPOINTS.map((endpoint) =>
+  createPublicClient({
+    chain,
+    transport: http(endpoint, { ...READ_HTTP_OPTIONS, retryCount: 0 }),
+  }),
+)
 const store = new StateStore(RUN_DIR)
 let cachedAccount
 
@@ -256,17 +270,17 @@ async function assertRuntimeIdentity() {
   if (walletCode && walletCode !== '0x') throw new Error('策略钱包不再是 EOA')
 }
 
-async function getPoolState(blockNumber) {
+async function getPoolStateWithClient(client, blockNumber) {
   const block = blockNumber === undefined ? {} : { blockNumber }
   const [[sqrtPriceX96, tick, protocolFee, lpFee], liquidity] = await Promise.all([
-    publicClient.readContract({
+    client.readContract({
       address: STATE_VIEW,
       abi: STATE_VIEW_ABI,
       functionName: 'getSlot0',
       args: [POOL_ID],
       ...block,
     }),
-    publicClient.readContract({
+    client.readContract({
       address: STATE_VIEW,
       abi: STATE_VIEW_ABI,
       functionName: 'getLiquidity',
@@ -284,6 +298,42 @@ async function getPoolState(blockNumber) {
     lpFee: Number(lpFee),
     liquidity,
   }
+}
+
+async function getPoolState(blockNumber) {
+  return getPoolStateWithClient(publicClient, blockNumber)
+}
+
+async function assertPreWriteRpcConsensus(state, label) {
+  if (!REQUIRE_RPC_CONSENSUS) return { verified: false, reason: 'NOT_REQUIRED' }
+  const report = await verifyRpcConsensus({
+    clients: directReadClients,
+    expectedChainId: CHAIN_ID,
+    walletAddress: WALLET,
+    confirmationDepth: CONFIRMATION_DEPTH,
+    maximumHeadDivergence: MAXIMUM_RPC_HEAD_DIVERGENCE,
+    readPoolState: getPoolStateWithClient,
+  })
+  if (
+    state?.control?.expectedNextNonce !== undefined &&
+    report.nonceLatest !== state.control.expectedNextNonce
+  ) {
+    throw new Error(
+      `HARD: 写前 RPC 共识 nonce ${report.nonceLatest} 与账本 ${state.control.expectedNextNonce} 不一致`,
+    )
+  }
+  store.appendAudit('prewrite_rpc_consensus', {
+    label,
+    endpointCount: report.endpointCount,
+    minimumHead: report.minimumHead,
+    maximumHead: report.maximumHead,
+    commonSafeBlock: report.commonSafeBlock,
+    commonSafeBlockHash: report.commonSafeBlockHash,
+    nonce: report.nonceLatest,
+    poolTick: report.pool.tick,
+    poolLiquidity: report.pool.liquidity,
+  })
+  return report
 }
 
 async function walletSnapshot(blockNumber) {
@@ -460,6 +510,15 @@ async function buildFreshPlan(principal, requestedBandCount = null) {
     market: evidence,
     bandCount: choice.bandCount,
   })
+  for (const band of plan.selected.bands) {
+    assertBuyRangeRespectsPriceFloor({
+      tickLower: band.tickLower,
+      tickUpper: band.tickUpper,
+      currentTick: poolState.tick,
+      minimumBuyPriceUsdg: DEFAULT_FINITE_MARTINGALE_POLICY.minimumBuyPriceUsdg,
+      tickSpacing: TICK_SPACING,
+    })
+  }
   return { plan, poolState, gasPrice, ethUsdg, choice }
 }
 
@@ -709,6 +768,8 @@ function ensureKeeperSchema(state) {
     maximumTransactionGasWei: MAXIMUM_ROTATION_TRANSACTION_GAS_WEI.toString(),
     minimumKeeperEthWei: MINIMUM_KEEPER_ETH_WEI.toString(),
     rangePlanningEvidence: 'LIVE_1H_6H_VOLUME_LIQUIDITY_AND_PROJECTED_SHARE',
+    minimumBuyPriceUsdg: DEFAULT_FINITE_MARTINGALE_POLICY.minimumBuyPriceUsdg,
+    floorBreachBehavior: 'HOLD_USDG_NO_LOWER_BUY',
     automaticSigning: true,
     manualPerTransactionApproval: false,
   }
@@ -926,6 +987,7 @@ async function executeKeeperTransaction({ state, key, label, to, data, metadata 
   const allowedAdditional =
     remainingDaily < limits.maximumTransactionGasWei ? remainingDaily : limits.maximumTransactionGasWei
   if (!existing?.request && allowedAdditional <= 0n) throw new Error('WAIT: 当前交易没有剩余 Gas 预算')
+  if (!existing?.request) await assertPreWriteRpcConsensus(state, label)
   const account = loadAccount()
   const walletClient = createWalletClient({
     account,
@@ -1126,6 +1188,45 @@ async function updateBootstrapWithPositions(state, mint) {
   fs.chmodSync(BOOTSTRAP_PATH, 0o600)
 }
 
+async function updateBootstrapCurrentPositions(state, migration) {
+  const { bootstrap } = readBootstrap()
+  const transactionHashes = [
+    ...new Set(
+      state.bands
+        .map((band) => band.activePosition?.mintTransaction)
+        .filter((hash) => typeof hash === 'string' && hash.startsWith('0x')),
+    ),
+  ]
+  bootstrap.positions = {
+    status: 'active',
+    strategyId: state.strategyId,
+    activatedAt: state.activatedAt,
+    updatedAt: new Date().toISOString(),
+    lastMigration: migration,
+    transactions: transactionHashes,
+    tokenIds: state.bands.map((band) => band.activePosition.tokenId),
+    bands: state.bands.map((band) => ({
+      id: band.id,
+      phase: band.phase,
+      weightBps: band.weightBps,
+      allocationUsdgAtomic: band.allocationUsdgAtomic,
+      tokenId: band.activePosition.tokenId,
+      leg: band.activePosition.leg,
+      tickLower: band.activePosition.tickLower,
+      tickUpper: band.activePosition.tickUpper,
+      priceLowUsdg: band.activePosition.priceLowUsdg || directPairPriceAtTick(band.activePosition.tickUpper),
+      priceHighUsdg:
+        band.activePosition.priceHighUsdg || directPairPriceAtTick(band.activePosition.tickLower),
+      mintTransaction: band.activePosition.mintTransaction,
+      mintBlock: band.activePosition.mintBlock,
+    })),
+  }
+  const temporary = `${BOOTSTRAP_PATH}.tmp`
+  fs.writeFileSync(temporary, `${stringify(bootstrap)}\n`, { mode: 0o600 })
+  fs.renameSync(temporary, BOOTSTRAP_PATH)
+  fs.chmodSync(BOOTSTRAP_PATH, 0o600)
+}
+
 async function resumeInitial(state) {
   await assertRuntimeIdentity()
   const { bootstrap, principal } = readBootstrap()
@@ -1152,6 +1253,9 @@ async function resumeInitial(state) {
         functionName: 'approve',
         args: [PERMIT2, required],
       })
+      if (!state.transactions?.[INITIAL_APPROVAL_STEP]?.request) {
+        await assertPreWriteRpcConsensus(state, '有限马丁 1/2：精确授权 USDG 给 Permit2')
+      }
       await executePersistedTransaction({
         state,
         key: INITIAL_APPROVAL_STEP,
@@ -1218,6 +1322,12 @@ async function resumeInitial(state) {
         return resumeInitial(state)
       }
       throw new Error(`真实 3 档建仓摩擦 ${actualFrictionBps} BPS 超过 5%`)
+    }
+    if (!state.transactions?.initial_mint?.request) {
+      await assertPreWriteRpcConsensus(
+        state,
+        `有限马丁 2/2：批量 mint ${fresh.plan.bandCount} 个 USDG-only BUY NFT`,
+      )
     }
     const mint = await executePersistedTransaction({
       state,
@@ -1378,6 +1488,13 @@ function freshBuyTarget(state, band, market, poolState) {
   })
   const target = fresh.selected.bands.find((candidate) => candidate.index === band.index)
   if (!target) throw new Error(`无法为 ${band.id} 生成动态 BUY 区间`)
+  const floor = assertBuyRangeRespectsPriceFloor({
+    tickLower: target.tickLower,
+    tickUpper: target.tickUpper,
+    currentTick: poolState.tick,
+    minimumBuyPriceUsdg: Number(state.policy.minimumBuyPriceUsdg),
+    tickSpacing: TICK_SPACING,
+  })
   return {
     leg: 'BUY',
     tickLower: target.tickLower,
@@ -1391,6 +1508,8 @@ function freshBuyTarget(state, band, market, poolState) {
       asOfBlockHash: market.evidence.asOfBlockHash,
       hotBand6hUsdg: market.evidence.hotBand6hUsdg,
       marketScore: fresh.selected.metrics,
+      minimumBuyPriceUsdg: floor.minimumBuyPriceUsdg,
+      maximumBuyTick: floor.maximumBuyTick,
     },
   }
 }
@@ -1823,6 +1942,448 @@ async function resumeRotation(state) {
   )
 }
 
+function hardFloorSourceBands(state) {
+  return HARD_FLOOR_REBASE_BAND_IDS.map((id) => {
+    const band = state.bands.find((candidate) => candidate.id === id)
+    if (!band) throw new Error(`HARD: 硬底价调仓缺少 ${id}`)
+    if (band.phase !== 'BUY_ACTIVE' || band.activePosition?.leg !== 'BUY') {
+      throw new Error(`HARD: ${id} 不是可迁移的活动 BUY 档`)
+    }
+    if (BigInt(band.activePosition.liquidity || 0) <= 0n) {
+      throw new Error(`HARD: ${id} 活动 liquidity 无效`)
+    }
+    return band
+  })
+}
+
+function buildHardFloorRebasePlan(state, poolState) {
+  const sources = hardFloorSourceBands(state)
+  return planHardFloorBuyLadder({
+    bands: sources.map((band) => ({
+      id: band.id,
+      index: band.index,
+      weightBps: band.weightBps,
+      allocationUsdgAtomic: BigInt(band.allocationUsdgAtomic),
+    })),
+    currentTick: poolState.tick,
+    sqrtPriceX96: poolState.sqrtPriceX96,
+    firstTickLower: HARD_FLOOR_REBASE_FIRST_TICK,
+    widthTicks: HARD_FLOOR_REBASE_WIDTH_TICKS,
+    minimumBuyPriceUsdg: DEFAULT_FINITE_MARTINGALE_POLICY.minimumBuyPriceUsdg,
+    tickSpacing: TICK_SPACING,
+  })
+}
+
+function hydrateHardFloorPlan(raw) {
+  const plan = structuredClone(raw)
+  for (const key of [
+    'principalUsdgAtomic',
+    'deployableUsdgAtomic',
+    'plannedSpendUsdgAtomic',
+    'reserveUsdgAtomic',
+  ]) {
+    plan[key] = BigInt(plan[key])
+  }
+  plan.selected.bands = plan.selected.bands.map((band) => ({
+    ...band,
+    allocationUsdgAtomic: BigInt(band.allocationUsdgAtomic),
+    amount0Max: BigInt(band.amount0Max),
+    amount1Max: BigInt(band.amount1Max),
+    liquidity: BigInt(band.liquidity),
+  }))
+  return plan
+}
+
+function publicHardFloorRebasePlan(state, plan, poolState, allowance = null) {
+  const usage = dailyUsage(state)
+  return {
+    status: 'READY_FOR_HARD_FLOOR_REBASE',
+    evidenceClass: 'LIVE_CHAIN_OWNER_LIQUIDITY_POOL_NONCE_AND_LOCAL_TARGET_PLAN',
+    wallet: WALLET,
+    pairPriceUsdg: directPairPriceAtTick(poolState.tick),
+    currentTick: poolState.tick,
+    b1Unchanged: true,
+    feesExcludedFromTargetPrincipal: true,
+    minimumBuyPriceUsdg: plan.minimumBuyPriceUsdg,
+    maximumBuyTick: plan.maximumBuyTick,
+    sourceBands: HARD_FLOOR_REBASE_BAND_IDS.map((id) => {
+      const band = state.bands.find((candidate) => candidate.id === id)
+      return {
+        id,
+        tokenId: band.activePosition.tokenId,
+        tickLower: band.activePosition.tickLower,
+        tickUpper: band.activePosition.tickUpper,
+        priceLowUsdg: directPairPriceAtTick(band.activePosition.tickUpper),
+        priceHighUsdg: directPairPriceAtTick(band.activePosition.tickLower),
+      }
+    }),
+    target: publicPlan(plan),
+    execution: {
+      sourceBurnTransactions: HARD_FLOOR_REBASE_BAND_IDS.length,
+      approvalTransactionsWorstCase: 2,
+      batchMintTransactions: 1,
+      maximumTransactions: HARD_FLOOR_REBASE_BAND_IDS.length + 3,
+      currentAllowanceUsdgAtomic: allowance === null ? null : allowance.toString(),
+      dailyUsage: usage,
+    },
+  }
+}
+
+function hardFloorTargetAlreadyApplied(state) {
+  const expected = [
+    [319_300, 320_100],
+    [320_100, 320_800],
+    [320_800, 321_500],
+    [321_500, 322_300],
+  ]
+  return HARD_FLOOR_REBASE_BAND_IDS.every((id, offset) => {
+    const band = state.bands.find((candidate) => candidate.id === id)
+    return Boolean(
+      band?.phase === 'BUY_ACTIVE' &&
+      band.activePosition?.leg === 'BUY' &&
+      BigInt(band.activePosition?.liquidity || 0) > 0n &&
+      band.activePosition.tickLower === expected[offset][0] &&
+      band.activePosition.tickUpper === expected[offset][1],
+    )
+  })
+}
+
+function assertHardFloorRebaseCapacity(state) {
+  const limits = keeperLimits(state)
+  const usage = dailyUsage(state)
+  const maximumTransactions = HARD_FLOOR_REBASE_BAND_IDS.length + 3
+  if (usage.transactionCount + maximumTransactions > limits.maximumDailyTransactions) {
+    throw new Error('WAIT: 今日剩余交易次数不足以原子化恢复硬底价调仓')
+  }
+  if (usage.gasWei >= limits.maximumDailyGasWei) throw new Error('WAIT: 已达到 UTC 日 Gas 上限')
+}
+
+async function hardFloorRebasePlanCommand() {
+  await assertRuntimeIdentity()
+  const state = ensureKeeperSchema(store.readState())
+  if (state.pendingRotation) throw new Error('HARD: 存在未完成换腿，不能规划硬底价调仓')
+  if (state.pendingRebase) {
+    console.log(
+      stringify({
+        status: 'REBASE_PENDING',
+        pendingRebase: state.pendingRebase,
+      }),
+    )
+    return
+  }
+  if (hardFloorTargetAlreadyApplied(state)) {
+    console.log(stringify({ status: 'ALREADY_APPLIED', minimumBuyPriceUsdg: 0.01 }))
+    return
+  }
+  const inspection = await inspectKeeperState(state)
+  const plan = buildHardFloorRebasePlan(state, inspection.headPool)
+  const allowance = await publicClient.readContract({
+    address: USDG,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: [WALLET, PERMIT2],
+  })
+  assertHardFloorRebaseCapacity(state)
+  console.log(stringify(publicHardFloorRebasePlan(state, plan, inspection.headPool, allowance)))
+}
+
+async function startHardFloorRebase(state) {
+  if (state.pendingRotation) throw new Error('HARD: 存在未完成换腿，不能开始硬底价调仓')
+  if (hardFloorTargetAlreadyApplied(state)) {
+    console.log(stringify({ status: 'ALREADY_APPLIED', minimumBuyPriceUsdg: 0.01 }))
+    return
+  }
+  assertHardFloorRebaseCapacity(state)
+  const inspection = await inspectKeeperState(state)
+  const plan = buildHardFloorRebasePlan(state, inspection.headPool)
+  const sources = Object.fromEntries(
+    hardFloorSourceBands(state).map((band) => [
+      band.id,
+      {
+        phase: band.phase,
+        anchorBuyRange: structuredClone(band.anchorBuyRange),
+        activePosition: structuredClone(band.activePosition),
+      },
+    ]),
+  )
+  state.pendingRebase = {
+    id: 'hard-floor-usdg-v1',
+    kind: 'HARD_FLOOR_REBASE',
+    phase: 'SOURCE_BURNS_PLANNED',
+    bandIds: [...HARD_FLOOR_REBASE_BAND_IDS],
+    minimumBuyPriceUsdg: plan.minimumBuyPriceUsdg,
+    maximumBuyTick: plan.maximumBuyTick,
+    b1Unchanged: true,
+    feesExcludedFromTargetPrincipal: true,
+    plannedAt: new Date().toISOString(),
+    plannedAtBlock: inspection.headBlock.toString(),
+    walletBefore: {
+      ethWei: inspection.wallet.ethWei.toString(),
+      usdgAtomic: inspection.wallet.usdgAtomic.toString(),
+      pairWei: inspection.wallet.pairWei.toString(),
+      nftBalance: inspection.wallet.nftBalance.toString(),
+    },
+    sources,
+    burns: {},
+    targetPlan: serializablePlan(plan),
+  }
+  state.status = 'REBASE_PENDING'
+  store.writeState(state)
+  store.appendAudit('hard_floor_rebase_planned', publicHardFloorRebasePlan(state, plan, inspection.headPool))
+  return resumeHardFloorRebase(state)
+}
+
+async function resumeHardFloorRebase(state) {
+  assertLiveArm()
+  const pending = state.pendingRebase
+  if (pending?.id !== 'hard-floor-usdg-v1') throw new Error('HARD: 没有可恢复的硬底价调仓')
+  if (state.pendingRotation) throw new Error('HARD: 硬底价调仓与普通换腿不能并行')
+  const plan = hydrateHardFloorPlan(pending.targetPlan)
+
+  for (const id of pending.bandIds) {
+    if (pending.burns[id]?.status === 'CANONICAL_SUCCESS') continue
+    const band = state.bands.find((candidate) => candidate.id === id)
+    const source = pending.sources[id]?.activePosition
+    if (!band || !source) throw new Error(`HARD: ${id} 调仓源头寸账本不完整`)
+    const poolState = await getPoolState()
+    const burn = buildBurn(source, poolState)
+    const key = `hard_floor_rebase_${id.toLowerCase()}_burn`
+    const removed = await executeKeeperTransaction({
+      state,
+      key,
+      label: `硬底价调仓：撤出并 burn ${id} NFT #${source.tokenId}`,
+      to: POSITION_MANAGER,
+      data: burn.data,
+      metadata: {
+        rebaseId: pending.id,
+        bandId: id,
+        tokenId: source.tokenId,
+        minimumUsdgAtomic: burn.minimums.amount0.toString(),
+        minimumPairWei: burn.minimums.amount1.toString(),
+      },
+    })
+    await verifyBurnedPosition(removed.receipt, BigInt(source.tokenId))
+    const usdgNet = tokenNetFromReceipt(removed.receipt, USDG)
+    const pairNet = tokenNetFromReceipt(removed.receipt, PAIR)
+    if (usdgNet < 0n || pairNet < 0n || (usdgNet === 0n && pairNet === 0n)) {
+      throw new Error(`HARD: ${id} burn 后代币净流入无法归因`)
+    }
+    pending.burns[id] = {
+      status: 'CANONICAL_SUCCESS',
+      transaction: removed.hash,
+      blockNumber: removed.receipt.blockNumber.toString(),
+      gasWei: removed.step.gasCostWei,
+      receivedUsdgAtomic: usdgNet.toString(),
+      receivedPairWei: pairNet.toString(),
+    }
+    band.phase = 'REBASE_BURNED_PENDING_BATCH_MINT'
+    band.activePosition.liquidity = '0'
+    pending.phase = 'SOURCE_BURNS_IN_PROGRESS'
+    store.writeState(state)
+    store.appendAudit('hard_floor_source_burned', { rebaseId: pending.id, bandId: id, ...pending.burns[id] })
+  }
+
+  pending.phase = 'TARGET_BATCH_MINT_READY'
+  const poolBeforeMint = await getPoolState()
+  for (const band of plan.selected.bands) {
+    assertBuyRangeRespectsPriceFloor({
+      tickLower: band.tickLower,
+      tickUpper: band.tickUpper,
+      currentTick: poolBeforeMint.tick,
+      minimumBuyPriceUsdg: pending.minimumBuyPriceUsdg,
+      tickSpacing: TICK_SPACING,
+    })
+  }
+  const walletBeforeMint = await walletSnapshot()
+  if (walletBeforeMint.usdgAtomic < plan.plannedSpendUsdgAtomic) {
+    throw new Error('HARD: 撤池后 USDG 不足以按原档位本金重建')
+  }
+  pending.walletBeforeMint = {
+    usdgAtomic: walletBeforeMint.usdgAtomic.toString(),
+    pairWei: walletBeforeMint.pairWei.toString(),
+    nftBalance: walletBeforeMint.nftBalance.toString(),
+  }
+  store.writeState(state)
+
+  const mintKey = 'hard_floor_rebase_batch_mint'
+  const persistedMint = state.transactions?.[mintKey]
+  let mintData
+  if (persistedMint?.request) {
+    mintData = persistedMint.request.data
+  } else {
+    await ensureTokenAllowanceExact(state, USDG, plan.plannedSpendUsdgAtomic, 'hard_floor_rebase_usdg')
+    const freshPool = await getPoolState()
+    for (const band of plan.selected.bands) {
+      assertBuyRangeRespectsPriceFloor({
+        tickLower: band.tickLower,
+        tickUpper: band.tickUpper,
+        currentTick: freshPool.tick,
+        minimumBuyPriceUsdg: pending.minimumBuyPriceUsdg,
+        tickSpacing: TICK_SPACING,
+      })
+    }
+    const account = loadAccount()
+    const built = await buildBatchMint(account, plan)
+    const [simulation, estimatedGas] = await Promise.all([
+      publicClient.call({ account: WALLET, to: POSITION_MANAGER, data: built.data }),
+      publicClient.estimateGas({ account: WALLET, to: POSITION_MANAGER, data: built.data }),
+    ])
+    validateBatchMintSimulationData(simulation.data)
+    pending.batchMintEstimatedGas = estimatedGas.toString()
+    store.writeState(state)
+    mintData = built.data
+  }
+  const minted = await executeKeeperTransaction({
+    state,
+    key: mintKey,
+    label: '硬底价调仓：批量 mint B2-B5 四个 USDG-only NFT',
+    to: POSITION_MANAGER,
+    data: mintData,
+    metadata: {
+      rebaseId: pending.id,
+      minimumBuyPriceUsdg: pending.minimumBuyPriceUsdg,
+      maximumBuyTick: pending.maximumBuyTick,
+      plan: publicPlan(plan),
+    },
+  })
+  const tokenIds = parseMintTokenIds(minted.receipt)
+  const verified = await verifyMintedPositions(tokenIds, plan, minted.receipt.blockNumber)
+  const usdgNet = tokenNetFromReceipt(minted.receipt, USDG)
+  const pairNet = tokenNetFromReceipt(minted.receipt, PAIR)
+  if (usdgNet >= 0n || -usdgNet > plan.plannedSpendUsdgAtomic || pairNet !== 0n) {
+    throw new Error('HARD: 批量 mint 的代币净变化与 USDG-only 计划不匹配')
+  }
+  const actualSpentUsdgAtomic = -usdgNet
+  const walletAfter = await walletSnapshot()
+  if (walletAfter.nftBalance !== BigInt(state.bands.length)) {
+    throw new Error('HARD: 硬底价调仓后 NFT 数量与五档账本不一致')
+  }
+  const completedAt = new Date().toISOString()
+  for (const record of verified) {
+    const band = state.bands.find((candidate) => candidate.id === record.band.id)
+    const source = pending.sources[record.band.id].activePosition
+    const event = {
+      kind: 'HARD_FLOOR_REBASE',
+      phase: 'COMPLETE',
+      rebaseId: pending.id,
+      sourceTokenId: source.tokenId,
+      sourceBurnTransaction: pending.burns[record.band.id].transaction,
+      targetTokenId: record.tokenId.toString(),
+      targetMintTransaction: minted.hash,
+      targetMintBlock: minted.receipt.blockNumber.toString(),
+      completedAt,
+    }
+    band.history.push(event)
+    band.phase = 'BUY_ACTIVE'
+    band.anchorBuyRange = {
+      tickLower: record.band.tickLower,
+      tickUpper: record.band.tickUpper,
+      priceLowUsdg: record.band.priceLowUsdg,
+      priceHighUsdg: record.band.priceHighUsdg,
+      theoreticalBuyBasisUsdg: record.band.theoreticalBuyBasisUsdg,
+    }
+    band.activePosition = {
+      tokenId: record.tokenId.toString(),
+      leg: 'BUY',
+      tickLower: record.tickLower,
+      tickUpper: record.tickUpper,
+      liquidity: record.liquidity.toString(),
+      inputToken: 'USDG',
+      inputAmountAtomic: record.band.amount0Max.toString(),
+      mintTransaction: minted.hash,
+      mintBlock: minted.receipt.blockNumber.toString(),
+      priceLowUsdg: record.band.priceLowUsdg,
+      priceHighUsdg: record.band.priceHighUsdg,
+      rangeEvidence: {
+        method: plan.method,
+        minimumBuyPriceUsdg: plan.minimumBuyPriceUsdg,
+        maximumBuyTick: plan.maximumBuyTick,
+      },
+    }
+    band.positions = { buyTokenId: record.tokenId.toString(), sellTokenId: null }
+  }
+  const completed = {
+    kind: 'HARD_FLOOR_REBASE',
+    phase: 'COMPLETE',
+    id: pending.id,
+    bandIds: [...pending.bandIds],
+    sourceBurnTransactions: pending.bandIds.map((id) => pending.burns[id].transaction),
+    targetMintTransaction: minted.hash,
+    targetTokenIds: tokenIds.map(String),
+    actualSpentUsdgAtomic: actualSpentUsdgAtomic.toString(),
+    unallocatedMintRoundingUsdgAtomic: (plan.plannedSpendUsdgAtomic - actualSpentUsdgAtomic).toString(),
+    feesRemainInWallet: true,
+    completedAt,
+  }
+  state.history.push(completed)
+  state.floorRebasePlan = pending.targetPlan
+  state.policy.minimumBuyPriceUsdg = pending.minimumBuyPriceUsdg
+  state.policy.floorBreachBehavior = 'HOLD_USDG_NO_LOWER_BUY'
+  state.lastRebase = completed
+  state.status = 'MARTINGALE_ACTIVE'
+  state.accounting = {
+    ...(state.accounting || {}),
+    walletUsdgAtomic: walletAfter.usdgAtomic.toString(),
+    walletPairWei: walletAfter.pairWei.toString(),
+    totalGasWei: canonicalGasSpent(state).toString(),
+  }
+  delete state.pendingRebase
+  state.updatedAt = completedAt
+  store.writeState(state)
+  store.appendAudit('hard_floor_rebase_complete', completed)
+  await updateBootstrapCurrentPositions(state, completed)
+  console.log(
+    stringify({
+      status: 'HARD_FLOOR_REBASE_COMPLETE',
+      evidenceClass: 'CANONICAL_RECEIPTS_AND_FIVE_POSITION_POST_STATE',
+      b1Unchanged: true,
+      minimumBuyPriceUsdg: plan.minimumBuyPriceUsdg,
+      pairPriceUsdg: directPairPriceAtTick((await getPoolState()).tick),
+      targetMintTransaction: minted.hash,
+      bands: state.bands.map((band) => ({
+        id: band.id,
+        tokenId: band.activePosition.tokenId,
+        phase: band.phase,
+        priceLowUsdg: directPairPriceAtTick(band.activePosition.tickUpper),
+        priceHighUsdg: directPairPriceAtTick(band.activePosition.tickLower),
+      })),
+      balances: {
+        eth: formatEther(walletAfter.ethWei),
+        usdg: formatUnits(walletAfter.usdgAtomic, 6),
+        pair: formatUnits(walletAfter.pairWei, 18),
+        nfts: walletAfter.nftBalance.toString(),
+      },
+    }),
+  )
+}
+
+async function resumeHardFloorRebaseOrWait(state) {
+  try {
+    return await resumeHardFloorRebase(state)
+  } catch (error) {
+    const message = errorMessage(error)
+    if (!isRetryableRuntimeWait(message)) throw error
+    console.log(
+      stringify({
+        status: 'WAITING_PENDING_HARD_FLOOR_REBASE',
+        reason: message,
+        rebaseId: state.pendingRebase?.id,
+        phase: state.pendingRebase?.phase,
+      }),
+    )
+  }
+}
+
+async function hardFloorRebase() {
+  assertLiveArm()
+  return store.withLock('hard-floor-rebase', async () => {
+    store.assertNotHalted()
+    const state = ensureKeeperSchema(store.readState())
+    if (state.pendingRebase) return resumeHardFloorRebase(state)
+    return startHardFloorRebase(state)
+  })
+}
+
 function isHardFailure(message) {
   return /^(HARD:)|nonce 隔离|回执失败|回执不再 canonical|人工对账|owner 不匹配|liquidity 与账本不匹配|poolKey/u.test(
     message,
@@ -1857,6 +2418,7 @@ async function keeperOnce() {
   return store.withLock('martingale-keeper-once', async () => {
     store.assertNotHalted()
     const state = ensureKeeperSchema(store.readState())
+    if (state.pendingRebase) return resumeHardFloorRebaseOrWait(state)
     if (!['BUY_LADDER_ACTIVE', 'MARTINGALE_ACTIVE', 'ROTATION_PENDING'].includes(state.status)) {
       throw new Error(`HARD: 当前状态 ${state.status} 不能运行 Keeper`)
     }
@@ -2025,6 +2587,8 @@ async function status() {
         ? {
             minimumConversionBps: state.policy.minimumConversionBps,
             minimumNetProfitBps: state.policy.minimumNetProfitBps,
+            minimumBuyPriceUsdg: state.policy.minimumBuyPriceUsdg,
+            floorBreachBehavior: state.policy.floorBreachBehavior,
             maximumDailyTransactions: state.policy.maximumDailyTransactions,
             maximumDailyRotations: state.policy.maximumDailyRotations,
             maximumDailyGasWei: state.policy.maximumDailyGasWei,
@@ -2035,8 +2599,19 @@ async function status() {
       rpc: {
         reads: rpcEndpointSummary(RPC_ENDPOINTS),
         broadcasts: rpcEndpointSummary(BROADCAST_ENDPOINTS),
+        preWriteConsensusRequired: REQUIRE_RPC_CONSENSUS,
+        maximumHeadDivergence: MAXIMUM_RPC_HEAD_DIVERGENCE.toString(),
       },
       pendingRotation: state?.pendingRotation ? publicRotation(state.pendingRotation) : null,
+      pendingRebase: state?.pendingRebase
+        ? {
+            id: state.pendingRebase.id,
+            phase: state.pendingRebase.phase,
+            bandIds: state.pendingRebase.bandIds,
+            completedBurns: Object.keys(state.pendingRebase.burns || {}),
+            minimumBuyPriceUsdg: state.pendingRebase.minimumBuyPriceUsdg,
+          }
+        : null,
       dailyUsage: state ? dailyUsage(state) : null,
       accounting: state?.accounting || null,
       bands,
@@ -2058,6 +2633,10 @@ async function reconcile() {
   await assertRuntimeIdentity()
   return store.withLock('martingale-reconcile', async () => {
     const state = ensureKeeperSchema(store.readState())
+    if (state.pendingRebase) {
+      assertLiveArm()
+      return resumeHardFloorRebase(state)
+    }
     if (state.pendingRotation) {
       assertLiveArm()
       return resumeRotation(state)
@@ -2075,6 +2654,29 @@ async function reconcile() {
   })
 }
 
+async function rpcConsensusCheck() {
+  await assertRuntimeIdentity()
+  const state = ensureKeeperSchema(store.readState())
+  const report = await assertPreWriteRpcConsensus(state, 'manual read-only consensus check')
+  if (!report.verified && report.reason === 'NOT_REQUIRED') {
+    throw new Error('HARD: PAIR_MARTINGALE_REQUIRE_RPC_CONSENSUS 未开启')
+  }
+  console.log(
+    stringify({
+      status: 'CONSISTENT',
+      evidenceClass: 'INDEPENDENT_RPC_SAFE_BLOCK_HASH_NONCE_AND_POOL_CONSENSUS',
+      endpointCount: report.endpointCount,
+      minimumHead: report.minimumHead,
+      maximumHead: report.maximumHead,
+      commonSafeBlock: report.commonSafeBlock,
+      commonSafeBlockHash: report.commonSafeBlockHash,
+      nonce: report.nonceLatest,
+      poolTick: report.pool.tick,
+      poolLiquidity: report.pool.liquidity,
+    }),
+  )
+}
+
 async function main() {
   const command = process.argv[2] || 'preflight'
   if (command === 'plan' || command === 'preflight') await initialPreflight()
@@ -2083,6 +2685,9 @@ async function main() {
   else if (command === 'key-check') await keyCheck()
   else if (command === 'keeper-once') await keeperOnce()
   else if (command === 'reconcile') await reconcile()
+  else if (command === 'rpc-consensus-check') await rpcConsensusCheck()
+  else if (command === 'rebase-floor-plan') await hardFloorRebasePlanCommand()
+  else if (command === 'rebase-floor' || command === 'resume-rebase-floor') await hardFloorRebase()
   else throw new Error(`未知命令：${command}`)
 }
 
@@ -2091,7 +2696,10 @@ main().catch((error) => {
   const message = errorMessage(error)
   try {
     store.appendAudit('command_failed', { command, error: message })
-    if (['keeper-once', 'reconcile', 'resume'].includes(command) && isHardFailure(message)) {
+    if (
+      ['keeper-once', 'reconcile', 'resume', 'rebase-floor', 'resume-rebase-floor'].includes(command) &&
+      isHardFailure(message)
+    ) {
       store.halt({ command, reason: message })
     }
   } catch {

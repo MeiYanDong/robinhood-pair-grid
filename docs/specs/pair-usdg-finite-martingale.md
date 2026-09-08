@@ -2,7 +2,7 @@
 
 Status: Accepted for isolated live operation
 
-Version: 1.0.0
+Version: 1.1.0
 
 Date: 2026-09-08
 
@@ -54,6 +54,10 @@ own exactly one active NFT per band outside the brief canonical removal/mint int
    that floor.
 6. A returning BUY range is regenerated from the current 1h/6h volume distribution, active liquidity and
    projected share. It remains USDG-only at mint time.
+7. The configured hard BUY floor is `0.01 USDG/PAIR`. A dynamically regenerated BUY whose lower boundary falls
+   below that floor is not minted; recovered capital remains USDG until a valid single-sided range exists.
+8. The approved floor migration leaves B1 unchanged and rebases B2-B5, without compounding wallet fees, to
+   adjacent ticks `[319300,320100]`, `[320100,320800]`, `[320800,321500]`, and `[321500,322300]`.
 
 ## Signing and recovery
 
@@ -68,6 +72,11 @@ own exactly one active NFT per band outside the brief canonical removal/mint int
   halt, never a blind retry.
 - Temporary market-data failure or insufficient gas creates no new transaction and is retried on a later timer
   invocation.
+- Production requires a paid Chainstack read path and the official Robinhood public RPC to agree on chain ID,
+  a common 128-confirmation block hash, wallet latest/pending nonce, and PAIR/USDG pool state before each new
+  signed intent. The same raw signed bytes fan out to both read endpoints plus the official sequencer.
+- Platform API keys remain on the operator machine. The server receives only the dedicated node endpoint via
+  its root-owned runtime environment.
 
 ## Runtime limits
 
@@ -88,5 +97,7 @@ configuration and are always constrained by the available gas balance.
   deterministic unit tests.
 - A live cycle is complete only after canonical receipts and owner/liquidity/pool/tick/balance post-state
   readback.
+- The one-time B2-B5 floor migration is resumable after each canonical source burn and after its batch mint.
+  B1, reserve USDG, and collected fee tokens are excluded from the target principal.
 - Production activation additionally requires a key-derived address check, state transfer readback, one healthy
   `NO_ACTION` keeper invocation, enabled/active timer readback and journal inspection.

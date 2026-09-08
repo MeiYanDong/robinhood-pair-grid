@@ -3,6 +3,22 @@
 All notable changes are documented here. This project follows semantic versioning while it remains an
 operator-managed service.
 
+## [0.6.0] - 2026-09-09
+
+### Added
+
+- an explicit `0.01 USDG/PAIR` BUY floor with fail-closed automatic re-entry;
+- a canonical, resumable B2-B5 hard-floor migration that preserves B1 and keeps wallet fees outside principal;
+- paid/public RPC consensus before every new strategy signature, while retaining byte-identical raw transaction
+  fanout to all configured broadcasters.
+- a manual-only hardened systemd unit for the resumable hard-floor migration and a redacted read-only RPC
+  consensus check.
+
+### Changed
+
+- production RPC configuration can prefer a dedicated Chainstack endpoint and independently verify it against
+  the official Robinhood public RPC without exposing endpoints in status output.
+
 ## [0.4.0] - 2026-09-08
 
 ### Added

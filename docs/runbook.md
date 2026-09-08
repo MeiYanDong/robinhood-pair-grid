@@ -88,6 +88,40 @@ is true only after at least two read endpoints are configured. Broadcast fanout 
 endpoints plus the official Robinhood Sequencer; a successful broadcast is still not completion until the exact
 hash has a canonical receipt and post-state readback.
 
+## PAIR hard-floor rebase
+
+Keep the Keeper timer stopped for the whole migration. First inspect the exact source NFTs and target plan:
+
+```bash
+npm run martingale-rpc-consensus-check
+npm run martingale-rebase-floor-plan
+```
+
+The approved migration keeps B1 unchanged, burns B2-B5 one at a time with canonical receipt gates, grants only
+the exact aggregate USDG allowance, then batch-mints four adjacent USDG-only positions above the `0.01` hard
+floor. Start or resume it with:
+
+```bash
+npm run martingale-rebase-floor
+npm run martingale-resume-rebase-floor
+```
+
+On the production host, run the signing path through the dedicated hardened unit so it receives only the
+isolated martingale credential:
+
+```bash
+sudo systemctl start robinhood-pair-usdg-martingale-rebase-floor.service
+sudo journalctl -u robinhood-pair-usdg-martingale-rebase-floor.service --since today
+```
+
+The unit is intentionally manual-only, conflicts with the normal Keeper service, and resumes from the persisted
+`pendingRebase` record after an interruption.
+
+Do not delete `pendingRebase` after an interruption. A price move into the target range returns `WAIT` and leaves
+the already removed capital in USDG. Resume only through the persisted command. After completion, require five
+owned NFTs, matching owner/liquidity/ticks, exact nonce agreement, a healthy one-shot `NO_ACTION`, and only then
+restart the timer.
+
 ## Emergency exit
 
 Disable the timer first. `npm run exit` removes liquidity and retains the resulting tokens; it does not market
