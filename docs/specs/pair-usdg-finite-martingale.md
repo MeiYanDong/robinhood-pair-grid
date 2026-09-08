@@ -56,8 +56,10 @@ own exactly one active NFT per band outside the brief canonical removal/mint int
    projected share. It remains USDG-only at mint time.
 7. The configured hard BUY floor is `0.01 USDG/PAIR`. A dynamically regenerated BUY whose lower boundary falls
    below that floor is not minted; recovered capital remains USDG until a valid single-sided range exists.
-8. The approved floor migration leaves B1 unchanged and rebases B2-B5, without compounding wallet fees, to
-   adjacent ticks `[319300,320100]`, `[320100,320800]`, `[320800,321500]`, and `[321500,322300]`.
+8. The approved floor migration leaves B1 unchanged and rebases B2-B5 without compounding wallet fees. At
+   execution time it leaves at least a 200-tick gap below the live price, divides the usable aligned span into
+   four adjacent bands, and caps the last tick at the `0.01` hard floor. If four useful bands cannot fit, it
+   waits without removing any position.
 
 ## Signing and recovery
 
