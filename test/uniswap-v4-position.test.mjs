@@ -1,9 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { keccak256, size } from 'viem'
+import { encodeAbiParameters, keccak256, size } from 'viem'
 import {
   burnAmountsWithSlippage,
   encodeAddLiquidity,
+  encodeBatchMintPositions,
+  encodeBurnPosition,
   encodeRemoveLiquidity,
   mintAmounts,
   mintAmountsWithSlippage,
@@ -12,14 +14,18 @@ import {
   singleSidedPosition,
   sqrtRatioAtTick,
   UNISWAP_V4_MATH_LIMITS,
+  validateBatchMintSimulationData,
 } from '../lib/uniswap-v4-position.mjs'
 
 const SPY = '0x117cc2133c37B721F49dE2A7a74833232B3B4C0C'
 const PAIR = '0x6b1d42927B1a84eC28Fa88d4fC6FA7AF404966be'
+const USDG = '0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168'
+const ZERO = '0x0000000000000000000000000000000000000000'
 const HOOK = '0x16D1560630Ce74af4478d9b8AD46548A092A2000'
 const WALLET = '0x1111111111111111111111111111111111111111'
 const POSITION_MANAGER = '0x58daec3116aae6D93017bAAea7749052E8a04fA7'
 const POOL_KEY = { currency0: SPY, currency1: PAIR, fee: 10_000, tickSpacing: 200, hooks: HOOK }
+const USDG_POOL_KEY = { currency0: USDG, currency1: PAIR, fee: 10_000, tickSpacing: 100, hooks: ZERO }
 const SIGNATURE = /** @type {import('viem').Hex} */ (`0x${'11'.repeat(65)}`)
 
 /** @param {bigint} amount0 @param {bigint} amount1 @param {bigint} nonce */
@@ -190,6 +196,68 @@ test('mint, increase and remove calldata remain byte-identical to SDK 2.3.3', ()
     676,
     '0x6770a4a3923297285fcea72e9c47c94903c70cf20fdebd72ed8d2764d7b85825',
   )
+
+  assertCalldata(
+    encodeBurnPosition({
+      poolKey: POOL_KEY,
+      tokenId: 42n,
+      amount0Min: 5211641831868576n,
+      amount1Min: 700955807415015260655n,
+      deadline: 2_000_000_100n,
+    }),
+    644,
+    '0x95f283483c0a6fd50c81185fd80092d25fe5a8db4bd624317859612028abf746',
+  )
+})
+
+test('five-position batch mint remains byte-identical to an SDK 2.3.3 planner vector', () => {
+  const batchPermit = {
+    owner: WALLET,
+    permitBatch: {
+      details: [{ token: USDG, amount: 72_000_000n, expiration: 2_000_000_000n, nonce: 7n }],
+      spender: POSITION_MANAGER,
+      sigDeadline: 1_999_990_000n,
+    },
+    signature: SIGNATURE,
+  }
+  const positions = [
+    [319_800, 320_700, 111_111_111_111_111n, 7_200_000n],
+    [320_700, 321_600, 222_222_222_222_222n, 10_800_000n],
+    [321_600, 322_500, 333_333_333_333_333n, 14_400_000n],
+    [322_500, 323_400, 444_444_444_444_444n, 18_000_000n],
+    [323_400, 324_300, 555_555_555_555_555n, 21_600_000n],
+  ].map(([tickLower, tickUpper, liquidity, amount0Max]) => ({
+    tickLower: Number(tickLower),
+    tickUpper: Number(tickUpper),
+    liquidity: BigInt(liquidity),
+    amount0Max: BigInt(amount0Max),
+    amount1Max: 0n,
+    recipient: WALLET,
+  }))
+  assertCalldata(
+    encodeBatchMintPositions({
+      poolKey: USDG_POOL_KEY,
+      positions,
+      batchPermit,
+      deadline: 2_000_000_100n,
+    }),
+    3524,
+    '0x1c26589d631ed225531552904263953e4efa54034580d5b774d2c3523822d194',
+  )
+})
+
+test('batch mint simulation decodes multicall and rejects an inner Permit2 error', () => {
+  const emptyBytesReturn = encodeAbiParameters([{ name: 'err', type: 'bytes' }], ['0x'])
+  const successful = encodeAbiParameters([{ name: 'results', type: 'bytes[]' }], [[emptyBytesReturn, '0x']])
+  assert.equal(validateBatchMintSimulationData(successful), true)
+
+  const permitErrorReturn = encodeAbiParameters([{ name: 'err', type: 'bytes' }], ['0x1234'])
+  const failedPermit = encodeAbiParameters(
+    [{ name: 'results', type: 'bytes[]' }],
+    [[permitErrorReturn, '0x']],
+  )
+  assert.throws(() => validateBatchMintSimulationData(failedPermit), /Permit2.*非空错误/)
+  assert.throws(() => validateBatchMintSimulationData('0x'), /缺少 multicall/)
 })
 
 test('invalid ranges and ambiguous add modes fail closed', () => {

@@ -1,0 +1,24 @@
+[Unit]
+Description=Read back the PAIR/USDG martingale chain and local state
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=pair-grid
+Group=pair-grid
+WorkingDirectory=/opt/robinhood-pair-grid/current
+Environment=PAIR_MARTINGALE_RUN_DIR=/var/lib/robinhood-pair-grid/usdg-martingale-live-1
+Environment=PAIR_MARTINGALE_BOOTSTRAP_PATH=/var/lib/robinhood-pair-grid/pair-usdg-martingale-bootstrap.json
+EnvironmentFile=/etc/robinhood-pair-grid/runtime.env
+ExecStart=/usr/local/bin/npm run martingale-status
+StateDirectory=robinhood-pair-grid
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/robinhood-pair-grid
+CapabilityBoundingSet=

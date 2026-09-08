@@ -3,6 +3,20 @@
 All notable changes are documented here. This project follows semantic versioning while it remains an
 operator-managed service.
 
+## [0.4.0] - 2026-09-08
+
+### Added
+
+- an isolated five-band PAIR/USDG finite-martingale strategy with fee-only capital provenance;
+- dynamic 1h/6h volume, liquidity and projected-share BUY planning;
+- dual-block 95% conversion gates, realized-basis SELL floors and non-compounding re-entry caps;
+- deterministic persisted transactions, burn-and-replace NFT rotations and dedicated 30-second systemd units.
+
+### Changed
+
+- status output is redacted to public hashes and accounting summaries instead of signed calldata;
+- release installation preserves an already active martingale timer across immutable upgrades.
+
 ## [0.3.0] - 2026-09-04
 
 ### Added

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run PAIR/USDG finite martingale keeper every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=robinhood-pair-usdg-martingale.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

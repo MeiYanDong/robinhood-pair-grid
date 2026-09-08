@@ -22,12 +22,21 @@ release_dir=${app_root}/releases/${commit_sha}
 current_link=${app_root}/current
 monitor_was_enabled=0
 monitor_was_active=0
+martingale_was_enabled=0
+martingale_was_active=0
 if systemctl is-enabled --quiet robinhood-pair-grid-monitor.timer 2>/dev/null; then
   monitor_was_enabled=1
 fi
 if systemctl is-active --quiet robinhood-pair-grid-monitor.timer 2>/dev/null; then
   monitor_was_active=1
   systemctl stop robinhood-pair-grid-monitor.timer
+fi
+if systemctl is-enabled --quiet robinhood-pair-usdg-martingale.timer 2>/dev/null; then
+  martingale_was_enabled=1
+fi
+if systemctl is-active --quiet robinhood-pair-usdg-martingale.timer 2>/dev/null; then
+  martingale_was_active=1
+  systemctl stop robinhood-pair-usdg-martingale.timer
 fi
 
 if ! id pair-grid >/dev/null 2>&1; then
@@ -47,6 +56,7 @@ cd "${release_dir}"
 npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 npm test
 node --check scripts/pair-grid.mjs
+node --check scripts/pair-usdg-martingale.mjs
 chown -R root:pair-grid "${release_dir}"
 chmod -R o-rwx "${release_dir}"
 
@@ -60,14 +70,25 @@ install -m 0644 deploy/systemd/robinhood-pair-grid-key-check.service /etc/system
 install -m 0644 deploy/systemd/robinhood-pair-grid-monitor.service /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-grid-monitor.timer /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-grid-status.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale.timer /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-key-check.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-status.service /etc/systemd/system/
 install -m 0600 deploy/runtime.env.example /etc/robinhood-pair-grid/runtime.env.example
 
 systemctl daemon-reload
 systemctl disable --now robinhood-pair-grid.timer
+systemctl disable --now robinhood-pair-usdg-martingale.timer
 if [[ ${monitor_was_enabled} -eq 1 ]]; then
   systemctl enable robinhood-pair-grid-monitor.timer
 fi
 if [[ ${monitor_was_active} -eq 1 ]]; then
   systemctl start robinhood-pair-grid-monitor.timer
 fi
-echo "installed ${commit_sha}; trading timer is disabled, prior monitor state is preserved, and no credential was changed"
+if [[ ${martingale_was_enabled} -eq 1 ]]; then
+  systemctl enable robinhood-pair-usdg-martingale.timer
+fi
+if [[ ${martingale_was_active} -eq 1 ]]; then
+  systemctl start robinhood-pair-usdg-martingale.timer
+fi
+echo "installed ${commit_sha}; legacy trading remains disabled, prior martingale/monitor state is preserved, and no credential was changed"
