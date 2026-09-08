@@ -1,6 +1,6 @@
 {
   "name": "robinhood-pair-grid",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Fail-closed single-sided PAIR/SPY range grid for Robinhood Chain",
   "private": true,
   "license": "MIT",

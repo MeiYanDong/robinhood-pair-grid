@@ -1,6 +1,5 @@
 [Unit]
-Description=Robinhood PAIR/USDG finite martingale LP keeper
-Documentation=https://github.com/MeiYanDong/robinhood-pair-grid
+Description=Monitor isolated PAIR/USDG martingale state and keeper heartbeat
 Wants=network-online.target
 After=network-online.target
 OnFailure=robinhood-pair-grid-alert@%n.service
@@ -11,12 +10,15 @@ User=pair-grid
 Group=pair-grid
 WorkingDirectory=/opt/robinhood-pair-grid/current
 Environment=NODE_ENV=production
+Environment=PAIR_GRID_MONITOR_MODE=martingale
+Environment=PAIR_GRID_RUN_DIR=/var/lib/robinhood-pair-grid/usdg-martingale-live-1
 Environment=PAIR_MARTINGALE_RUN_DIR=/var/lib/robinhood-pair-grid/usdg-martingale-live-1
 Environment=PAIR_MARTINGALE_BOOTSTRAP_PATH=/var/lib/robinhood-pair-grid/pair-usdg-martingale-bootstrap.json
+Environment=PAIR_GRID_KEEPER_HEARTBEAT_PATH=/var/lib/robinhood-pair-grid/usdg-martingale-live-1/keeper-success.heartbeat
+Environment=PAIR_GRID_ALERT_HEARTBEAT_MAX_AGE_SECONDS=120
 EnvironmentFile=/etc/robinhood-pair-grid/runtime.env
-LoadCredentialEncrypted=pair-usdg-martingale-private-key:/etc/credstore.encrypted/pair-usdg-martingale-private-key
-ExecStart=/usr/local/bin/npm run martingale-keeper-once
-ExecStartPost=/usr/bin/touch /var/lib/robinhood-pair-grid/usdg-martingale-live-1/keeper-success.heartbeat
+LoadCredentialEncrypted=pair-grid-alert:/etc/credstore.encrypted/pair-grid-alert
+ExecStart=/usr/local/bin/node scripts/pair-grid-alert.mjs monitor-once
 StateDirectory=robinhood-pair-grid
 StateDirectoryMode=0700
 UMask=0077
@@ -36,7 +38,7 @@ RestrictSUIDSGID=true
 SystemCallArchitectures=native
 CapabilityBoundingSet=
 LockPersonality=true
-TimeoutStartSec=12min
+TimeoutStartSec=90s
 
 [Install]
 WantedBy=multi-user.target

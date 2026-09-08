@@ -24,6 +24,38 @@ monitor_was_enabled=0
 monitor_was_active=0
 martingale_was_enabled=0
 martingale_was_active=0
+martingale_monitor_was_enabled=0
+martingale_monitor_was_active=0
+install_completed=0
+
+restore_runtime_on_failure() {
+  result=$?
+  trap - EXIT
+  if [[ ${result} -ne 0 && ${install_completed} -eq 0 ]]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [[ ${monitor_was_enabled} -eq 1 ]]; then
+      systemctl enable robinhood-pair-grid-monitor.timer >/dev/null 2>&1 || true
+    fi
+    if [[ ${monitor_was_active} -eq 1 ]]; then
+      systemctl start robinhood-pair-grid-monitor.timer >/dev/null 2>&1 || true
+    fi
+    if [[ ${martingale_was_enabled} -eq 1 ]]; then
+      systemctl enable robinhood-pair-usdg-martingale.timer >/dev/null 2>&1 || true
+    fi
+    if [[ ${martingale_was_active} -eq 1 ]]; then
+      systemctl start robinhood-pair-usdg-martingale.timer >/dev/null 2>&1 || true
+    fi
+    if [[ ${martingale_monitor_was_enabled} -eq 1 ]]; then
+      systemctl enable robinhood-pair-usdg-martingale-monitor.timer >/dev/null 2>&1 || true
+    fi
+    if [[ ${martingale_monitor_was_active} -eq 1 ]]; then
+      systemctl start robinhood-pair-usdg-martingale-monitor.timer >/dev/null 2>&1 || true
+    fi
+  fi
+  exit "${result}"
+}
+
+trap restore_runtime_on_failure EXIT
 if systemctl is-enabled --quiet robinhood-pair-grid-monitor.timer 2>/dev/null; then
   monitor_was_enabled=1
 fi
@@ -37,6 +69,13 @@ fi
 if systemctl is-active --quiet robinhood-pair-usdg-martingale.timer 2>/dev/null; then
   martingale_was_active=1
   systemctl stop robinhood-pair-usdg-martingale.timer
+fi
+if systemctl is-enabled --quiet robinhood-pair-usdg-martingale-monitor.timer 2>/dev/null; then
+  martingale_monitor_was_enabled=1
+fi
+if systemctl is-active --quiet robinhood-pair-usdg-martingale-monitor.timer 2>/dev/null; then
+  martingale_monitor_was_active=1
+  systemctl stop robinhood-pair-usdg-martingale-monitor.timer
 fi
 
 if ! id pair-grid >/dev/null 2>&1; then
@@ -74,6 +113,8 @@ install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale.service /etc/syste
 install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale.timer /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-key-check.service /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-status.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-monitor.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-monitor.timer /etc/systemd/system/
 install -m 0600 deploy/runtime.env.example /etc/robinhood-pair-grid/runtime.env.example
 
 systemctl daemon-reload
@@ -91,4 +132,11 @@ fi
 if [[ ${martingale_was_active} -eq 1 ]]; then
   systemctl start robinhood-pair-usdg-martingale.timer
 fi
+if [[ ${martingale_monitor_was_enabled} -eq 1 ]]; then
+  systemctl enable robinhood-pair-usdg-martingale-monitor.timer
+fi
+if [[ ${martingale_monitor_was_active} -eq 1 ]]; then
+  systemctl start robinhood-pair-usdg-martingale-monitor.timer
+fi
+install_completed=1
 echo "installed ${commit_sha}; legacy trading remains disabled, prior martingale/monitor state is preserved, and no credential was changed"

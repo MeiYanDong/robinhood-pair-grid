@@ -21,8 +21,14 @@ On a trusted workstation, create a tarball from a clean, verified Git commit. Co
 sudo deploy/install-release.sh /path/to/release.tar.gz <full-commit-sha>
 ```
 
-The installer runs production dependency installation and tests, installs systemd units and disables the
-timer. It does not create, overwrite or arm credentials.
+The installer runs production dependency installation and tests, installs systemd units, keeps legacy trading
+disabled and preserves the prior enabled/active state of the isolated Keeper and monitor timers. It does not
+create, overwrite or arm credentials.
+
+Configure an ordered provider list in `RH_RPC_URLS` using comma- or newline-separated HTTPS endpoints. Keep API
+keys only in the root-owned runtime environment; logs and status output expose counts only. `RH_RPC_URL` remains
+the one-endpoint compatibility fallback. `RH_BROADCAST_URLS` is optional; when absent, the runtime broadcasts
+the same signed bytes to all read endpoints and the official Robinhood Sequencer.
 
 ## Credential
 
@@ -121,14 +127,16 @@ sudo systemctl start robinhood-pair-usdg-martingale.service
 sudo journalctl -u robinhood-pair-usdg-martingale.service --no-pager -n 100
 systemctl is-enabled robinhood-pair-usdg-martingale.timer
 systemctl is-active robinhood-pair-usdg-martingale.timer
+systemctl is-enabled robinhood-pair-usdg-martingale-monitor.timer
+systemctl is-active robinhood-pair-usdg-martingale-monitor.timer
 ```
 
 Expected initial timer state is `disabled` and `inactive`. A successful status command is readback evidence,
 not evidence that automatic trading is active.
 
-The installer always disables the trading timer. It preserves an already-enabled monitor timer across later
-releases but does not enable monitoring on first install. After the external synthetic proof succeeds, enable
-only the monitor:
+The installer always disables the legacy trading timer. It preserves already-enabled monitor timers and the
+isolated martingale timer across later releases but does not enable them on first install. After the external
+synthetic proof succeeds, enable only the legacy monitor if that strategy is in use:
 
 ```bash
 sudo systemctl enable --now robinhood-pair-grid-monitor.timer
@@ -143,10 +151,17 @@ or a fully evidenced rotation. Then enable its independent timer and read it bac
 
 ```bash
 sudo systemctl enable --now robinhood-pair-usdg-martingale.timer
+sudo systemctl enable --now robinhood-pair-usdg-martingale-monitor.timer
 systemctl is-enabled robinhood-pair-usdg-martingale.timer
 systemctl is-active robinhood-pair-usdg-martingale.timer
 systemctl list-timers robinhood-pair-usdg-martingale.timer --no-pager
+systemctl list-timers robinhood-pair-usdg-martingale-monitor.timer --no-pager
 ```
 
 This enables persistent automatic signing only for the isolated wallet. It does not enable the legacy
 `robinhood-pair-grid.timer`.
+
+The monitor loads only `pair-grid-alert`; it never loads the martingale signing credential. Confirm its journal
+reports `monitorMode: martingale`, `readbackOk: true` and `heartbeatOk: true`, while `martingale-status` reports
+five verified bands and exact `latest === pending === expectedNextNonce`, before treating unattended operation
+as healthy.

@@ -4,6 +4,7 @@ import test from 'node:test'
 import { keccak256 } from 'viem'
 
 import {
+  broadcastRawTransaction,
   deserializeLegacyRequest,
   executePersistedTransaction,
   serializeLegacyRequest,
@@ -45,6 +46,61 @@ test('legacy transaction requests round-trip without bigint or address loss', ()
       WALLET,
     ),
     false,
+  )
+})
+
+test('the same signed bytes are broadcast to every RPC and one acceptance is sufficient', async () => {
+  const seen = []
+  const result = await broadcastRawTransaction({
+    clients: [
+      {
+        async sendRawTransaction({ serializedTransaction }) {
+          seen.push(serializedTransaction)
+          throw new Error('network unavailable')
+        },
+      },
+      {
+        async sendRawTransaction({ serializedTransaction }) {
+          seen.push(serializedTransaction)
+          return HASH
+        },
+      },
+    ],
+    serializedTransaction: SERIALIZED,
+    expectedHash: HASH,
+  })
+  assert.deepEqual(seen, [SERIALIZED, SERIALIZED])
+  assert.deepEqual(result, { hash: HASH, accepted: 1, known: 0, failed: 1 })
+})
+
+test('broadcast fanout fails closed on a mismatched hash or total outage', async () => {
+  await assert.rejects(
+    broadcastRawTransaction({
+      clients: [
+        {
+          async sendRawTransaction() {
+            return `0x${'44'.repeat(32)}`
+          },
+        },
+      ],
+      serializedTransaction: SERIALIZED,
+      expectedHash: HASH,
+    }),
+    /哈希不一致/u,
+  )
+  await assert.rejects(
+    broadcastRawTransaction({
+      clients: [
+        {
+          async sendRawTransaction() {
+            throw new Error('https://secret.invalid/?token=secret')
+          },
+        },
+      ],
+      serializedTransaction: SERIALIZED,
+      expectedHash: HASH,
+    }),
+    { message: '全部 1 个 RPC 广播失败' },
   )
 })
 

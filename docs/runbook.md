@@ -22,11 +22,13 @@ systemd timer invokes `martingale-keeper-once` every 30 seconds and does not req
 
 ## External alerts
 
-The independent monitor runs every five minutes after its own timer is enabled. It routes:
+Legacy PAIR/SPY monitoring runs every five minutes. The isolated PAIR/USDG monitor runs every minute and also
+requires a successful Keeper heartbeat no older than 120 seconds. They route:
 
 - every Keeper systemd failure immediately;
 - a durable `HALTED` sentinel immediately and again after six hours while it remains unresolved;
 - chain readback after three consecutive failures and again after six hours while failures continue.
+- an absent or stale PAIR/USDG Keeper success heartbeat immediately and again after six hours.
 
 The Feishu credential is separate from the wallet credential. Provider acceptance is logged only as
 `EXTERNAL_ALERT_ACKNOWLEDGED` with an event ID, `providerCode: 0` and timestamp; webhook and signing secret must
@@ -80,6 +82,11 @@ machine guard, not a prompt. After the dedicated key check, status readback and 
 If the martingale reports `WAITING_NO_ACTION`, inspect gas balance or UTC limits and leave the state intact. If
 it persists a hard halt, disable only its timer, preserve the signed-intent ledger, run reconciliation against
 canonical receipts, and never delete the pending state to force a retry.
+
+The martingale status report includes only RPC endpoint counts, never endpoint URLs. `reads.failoverAvailable`
+is true only after at least two read endpoints are configured. Broadcast fanout defaults to the configured read
+endpoints plus the official Robinhood Sequencer; a successful broadcast is still not completion until the exact
+hash has a canonical receipt and post-state readback.
 
 ## Emergency exit
 

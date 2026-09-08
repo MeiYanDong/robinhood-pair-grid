@@ -33,6 +33,10 @@ PAIR/USDG 有限马丁额外遵守：只使用已核验的手续费本金，90% 
 - 进程锁防止 timer、人工命令和其他进程并发使用同一状态与 nonce。
 - `reconcile` 只接受本地广播记录与链上成功回执一一对应的恢复证据，不盲目重试交易。
 - Keeper service 失败、持久 `HALTED` 和连续三次链上读回失败通过独立飞书通道告警；告警进程不加载交易私钥。
+- PAIR/USDG Keeper 每次成功退出后写入独立心跳；一分钟监控核验五个 NFT、链上 owner/liquidity、
+  NFT 余额和 nonce 三方一致性，心跳超过 120 秒会告警。
+- `RH_RPC_URLS` 支持有序只读故障切换；同一份已签名原始交易会并发广播到配置端点和 Robinhood
+  官方 Sequencer，不允许 RPC 改写 payload 或 nonce。
 - 生产依赖只保留 `viem`；本地 v4 头寸数学与 PositionManager 编码必须通过旧版 SDK 的固定
   数值和 calldata 哈希兼容向量。
 
@@ -77,6 +81,9 @@ npm run exit            # 撤出流动性，不自动兑换
 
 服务器中的 martingale arm 是一次性部署防误开关，不是逐笔授权。专用 timer 启用后，满足策略和
 canonical 门禁的交易由隔离钱包自动签名。
+
+生产环境应给 `RH_RPC_URLS` 配置至少两个独立服务商。只有一个读取端点时，状态会明确报告
+`failoverAvailable: false`；这不能被描述为生产级读取冗余。
 
 解除 `HALTED` 必须先完成 `npm run reconcile`，然后临时设置：
 
