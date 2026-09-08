@@ -16,4 +16,8 @@ dedicated wallet so range conversions continue without interactive wallet prompt
   evidence.
 - A dedicated 30-second systemd timer loads only the isolated wallet credential and runs without per-transaction
   human input.
+- A separate one-minute monitor loads only the alert credential, validates all five positions and exact nonce
+  isolation from a single numbered block, and alerts when the Keeper success heartbeat is older than 120 seconds.
+- Ordered read RPC failover and byte-identical fanout to multiple broadcast endpoints do not expose endpoint
+  URLs or delegate nonce construction to a provider.
 - The public repository and release artifact contain no credential or live state.

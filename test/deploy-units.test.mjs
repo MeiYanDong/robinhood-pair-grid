@@ -16,6 +16,7 @@ test('alert units load only the dedicated alert credential', () => {
     'robinhood-pair-grid-alert@.service',
     'robinhood-pair-grid-alert-test.service',
     'robinhood-pair-grid-monitor.service',
+    'robinhood-pair-usdg-martingale-monitor.service',
   ]) {
     const content = unit(name)
     assert.match(
@@ -54,6 +55,10 @@ test('isolated martingale keeper has its own credential, state path and 30 secon
   assert.match(keeper, /^ExecStart=\/usr\/local\/bin\/npm run martingale-keeper-once$/mu)
   assert.match(
     keeper,
+    /^ExecStartPost=\/usr\/bin\/touch \/var\/lib\/robinhood-pair-grid\/usdg-martingale-live-1\/keeper-success\.heartbeat$/mu,
+  )
+  assert.match(
+    keeper,
     /^Environment=PAIR_MARTINGALE_RUN_DIR=\/var\/lib\/robinhood-pair-grid\/usdg-martingale-live-1$/mu,
   )
   assert.doesNotMatch(keeper, /pair-grid-private-key/u)
@@ -69,4 +74,23 @@ test('isolated martingale keeper has its own credential, state path and 30 secon
   )
   assert.match(status, /martingale-status/u)
   assert.doesNotMatch(status, /LoadCredential/u)
+})
+
+test('isolated martingale monitor validates status and successful keeper heartbeat every minute', () => {
+  const monitor = unit('robinhood-pair-usdg-martingale-monitor.service')
+  const timer = unit('robinhood-pair-usdg-martingale-monitor.timer')
+
+  assert.match(monitor, /^Environment=PAIR_GRID_MONITOR_MODE=martingale$/mu)
+  assert.match(
+    monitor,
+    /^Environment=PAIR_GRID_RUN_DIR=\/var\/lib\/robinhood-pair-grid\/usdg-martingale-live-1$/mu,
+  )
+  assert.match(monitor, /^Environment=PAIR_GRID_ALERT_HEARTBEAT_MAX_AGE_SECONDS=120$/mu)
+  assert.match(monitor, /scripts\/pair-grid-alert\.mjs monitor-once/u)
+  assert.match(monitor, /^OnFailure=robinhood-pair-grid-alert@%n\.service$/mu)
+  assert.doesNotMatch(monitor, /pair-usdg-martingale-private-key/u)
+  assert.match(timer, /^OnCalendar=\*-\*-\* \*:\*:00$/mu)
+  assert.match(timer, /^AccuracySec=5s$/mu)
+  assert.match(timer, /^Persistent=true$/mu)
+  assert.match(timer, /^Unit=robinhood-pair-usdg-martingale-monitor\.service$/mu)
 })

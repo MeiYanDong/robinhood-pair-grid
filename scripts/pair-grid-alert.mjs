@@ -3,7 +3,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { assertCanonicalReadbackReport, planMonitorRun, markMonitorDelivery } from '../lib/alert-monitor.mjs'
+import {
+  assessHeartbeat,
+  assertCanonicalReadbackReport,
+  assertMartingaleReadbackReport,
+  planMonitorRun,
+  markMonitorDelivery,
+} from '../lib/alert-monitor.mjs'
 import { createAlertEvent, deliverFeishuAlert, loadFeishuCredential } from '../lib/feishu-alerts.mjs'
 import { redactSensitiveText } from '../lib/runtime-guards.mjs'
 
@@ -11,6 +17,10 @@ const execFileAsync = promisify(execFile)
 const runDirectory = path.resolve(process.env.PAIR_GRID_RUN_DIR || path.join(process.cwd(), 'runs'))
 const haltPath = path.join(runDirectory, 'pair-grid.halted.json')
 const monitorStatePath = path.join(runDirectory, 'pair-grid-alert-monitor.json')
+const monitorMode = process.env.PAIR_GRID_MONITOR_MODE || 'legacy'
+const heartbeatPath = path.resolve(
+  process.env.PAIR_GRID_KEEPER_HEARTBEAT_PATH || path.join(runDirectory, 'keeper-success.heartbeat'),
+)
 
 function stringify(value) {
   return JSON.stringify(value, null, 2)
@@ -73,28 +83,57 @@ async function readCanonicalStatus() {
   const childEnvironment = { ...process.env }
   delete childEnvironment.CREDENTIALS_DIRECTORY
   childEnvironment.PAIR_GRID_LIVE_ARM = '0'
+  delete childEnvironment.PAIR_MARTINGALE_LIVE_ARM
   try {
-    const { stdout } = await execFileAsync(process.execPath, ['scripts/pair-grid.mjs', 'status'], {
+    const script =
+      monitorMode === 'legacy'
+        ? 'scripts/pair-grid.mjs'
+        : monitorMode === 'martingale'
+          ? 'scripts/pair-usdg-martingale.mjs'
+          : null
+    if (!script) throw new Error(`PAIR_GRID_MONITOR_MODE 不支持 ${monitorMode}`)
+    const { stdout } = await execFileAsync(process.execPath, [script, 'status'], {
       cwd: process.cwd(),
       env: childEnvironment,
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     })
-    assertCanonicalReadbackReport(JSON.parse(stdout))
+    const report = JSON.parse(stdout)
+    if (monitorMode === 'martingale') assertMartingaleReadbackReport(report)
+    else assertCanonicalReadbackReport(report)
     return { ok: true }
   } catch (error) {
     return { ok: false, error: redactSensitiveText(error?.message || String(error)) }
   }
 }
 
+function readHeartbeat() {
+  if (monitorMode !== 'martingale') return { ok: true }
+  let modifiedAtMs = Number.NaN
+  try {
+    modifiedAtMs = fs.statSync(heartbeatPath).mtimeMs
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      return { ok: false, error: redactSensitiveText(error?.message || String(error)) }
+    }
+  }
+  return assessHeartbeat({
+    modifiedAtMs,
+    maximumAgeSeconds: parseBoundedInteger('PAIR_GRID_ALERT_HEARTBEAT_MAX_AGE_SECONDS', 120, 30, 86_400),
+  })
+}
+
 async function monitorOnce() {
   const previous = readJsonIfPresent(monitorStatePath) || {}
   const halt = readJsonIfPresent(haltPath)
   const readback = await readCanonicalStatus()
+  const heartbeat = readHeartbeat()
   const plan = planMonitorRun({
     previous,
     halt,
     readback,
+    heartbeat,
+    strategyLabel: monitorMode === 'martingale' ? 'PAIR/USDG 有限马丁' : 'PAIR 网格',
     failureThreshold: parseBoundedInteger('PAIR_GRID_ALERT_READBACK_FAILURES', 3, 1, 100),
     repeatMinutes: parseBoundedInteger('PAIR_GRID_ALERT_REPEAT_MINUTES', 360, 5, 10_080),
   })
@@ -117,7 +156,10 @@ async function monitorOnce() {
     stringify({
       status: 'MONITOR_OK',
       halted: Boolean(halt),
+      monitorMode,
       readbackOk: readback.ok,
+      heartbeatOk: heartbeat.ok,
+      heartbeatAgeSeconds: heartbeat.ageSeconds ?? null,
       consecutiveReadbackFailures: state.consecutiveReadbackFailures,
       alertsAcknowledged: plan.alerts.length,
     }),

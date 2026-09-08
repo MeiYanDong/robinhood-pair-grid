@@ -10,6 +10,7 @@ import {
   encodeFunctionData,
   formatEther,
   formatUnits,
+  fallback,
   getAddress,
   http,
   parseAbi,
@@ -29,6 +30,7 @@ import {
   sellFillAccounting,
 } from '../lib/finite-martingale.mjs'
 import { canonicalGasSpent, executePersistedTransaction } from '../lib/persisted-transaction.mjs'
+import { parseBroadcastEndpoints, parseRpcEndpoints, rpcEndpointSummary } from '../lib/rpc-endpoints.mjs'
 import { StateStore } from '../lib/state-store.mjs'
 import {
   burnAmountsWithSlippage,
@@ -43,7 +45,8 @@ import {
 } from '../lib/uniswap-v4-position.mjs'
 
 const CHAIN_ID = 4663
-const RPC_URL = process.env.RH_RPC_URL || 'https://rpc.mainnet.chain.robinhood.com'
+const RPC_ENDPOINTS = parseRpcEndpoints()
+const BROADCAST_ENDPOINTS = parseBroadcastEndpoints(process.env, RPC_ENDPOINTS)
 const WALLET = getAddress(process.env.PAIR_MARTINGALE_WALLET || zeroAddress)
 const KEYCHAIN_SERVICE = process.env.PAIR_MARTINGALE_KEYCHAIN_SERVICE || 'codex-rh-pair-usdg-martingale'
 const MARKET_URL = process.env.PAIR_MARTINGALE_MARKET_URL || ''
@@ -81,6 +84,11 @@ const UINT160_MAX = (1n << 160n) - 1n
 const ZERO = zeroAddress
 const EXPLORER_TX = 'https://robinhoodchain.blockscout.com/tx/'
 const INITIAL_APPROVAL_STEP = ['approve', 'usdg', 'permit2'].join('_')
+const READ_HTTP_OPTIONS = Object.freeze({
+  timeout: 20_000,
+  retryCount: 1,
+  batch: { batchSize: 20, wait: 10 },
+})
 
 if (WALLET === zeroAddress) throw new Error('缺少 PAIR_MARTINGALE_WALLET')
 if (!MARKET_URL) throw new Error('缺少 PAIR_MARTINGALE_MARKET_URL')
@@ -89,7 +97,7 @@ const chain = defineChain({
   id: CHAIN_ID,
   name: 'Robinhood Chain',
   nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-  rpcUrls: { default: { http: [RPC_URL] } },
+  rpcUrls: { default: { http: RPC_ENDPOINTS } },
   blockExplorers: {
     default: { name: 'Robinhood Blockscout', url: 'https://robinhoodchain.blockscout.com' },
   },
@@ -98,10 +106,26 @@ const chain = defineChain({
 /** @type {any} viem's custom-chain generics are isolated at this RPC adapter boundary. */
 const publicClient = createPublicClient({
   chain,
-  transport: http(undefined, { timeout: 30_000, retryCount: 2 }),
+  transport:
+    RPC_ENDPOINTS.length === 1
+      ? http(RPC_ENDPOINTS[0], READ_HTTP_OPTIONS)
+      : fallback(
+          RPC_ENDPOINTS.map((endpoint) => http(endpoint, { ...READ_HTTP_OPTIONS, retryCount: 0 })),
+          { rank: false, retryCount: 1 },
+        ),
 })
 const store = new StateStore(RUN_DIR)
 let cachedAccount
+
+function createBroadcastClients(account) {
+  return BROADCAST_ENDPOINTS.map((endpoint) =>
+    createWalletClient({
+      account,
+      chain,
+      transport: http(endpoint, { timeout: 20_000, retryCount: 0 }),
+    }),
+  )
+}
 
 const ERC20_ABI = parseAbi([
   'function symbol() view returns (string)',
@@ -908,6 +932,7 @@ async function executeKeeperTransaction({ state, key, label, to, data, metadata 
     chain,
     transport: http(undefined, { timeout: 30_000, retryCount: 0 }),
   })
+  const broadcastClients = createBroadcastClients(account)
   return executePersistedTransaction({
     state,
     key,
@@ -917,6 +942,7 @@ async function executeKeeperTransaction({ state, key, label, to, data, metadata 
     metadata,
     account,
     walletClient,
+    broadcastClients,
     publicClient,
     walletAddress: WALLET,
     chainId: CHAIN_ID,
@@ -1110,6 +1136,7 @@ async function resumeInitial(state) {
     chain,
     transport: http(undefined, { timeout: 30_000, retryCount: 0 }),
   })
+  const broadcastClients = createBroadcastClients(account)
   if (!state.transactions?.initial_mint) {
     const required = BigInt(state.plan.deployableUsdgAtomic)
     const allowance = await publicClient.readContract({
@@ -1134,6 +1161,7 @@ async function resumeInitial(state) {
         metadata: { amountUsdgAtomic: required.toString() },
         account,
         walletClient,
+        broadcastClients,
         publicClient,
         walletAddress: WALLET,
         chainId: CHAIN_ID,
@@ -1205,6 +1233,7 @@ async function resumeInitial(state) {
       },
       account,
       walletClient,
+      broadcastClients,
       publicClient,
       walletAddress: WALLET,
       chainId: CHAIN_ID,
@@ -1923,7 +1952,8 @@ async function enter() {
 
 async function status() {
   await assertRuntimeIdentity()
-  const [wallet, poolState] = await Promise.all([walletSnapshot(), getPoolState()])
+  const blockNumber = await publicClient.getBlockNumber()
+  const [wallet, poolState] = await Promise.all([walletSnapshot(blockNumber), getPoolState(blockNumber)])
   const rawState = store.readState()
   const state =
     rawState?.strategyId === 'pair-usdg-finite-martingale-live-1' ? ensureKeeperSchema(rawState) : rawState
@@ -1933,7 +1963,7 @@ async function status() {
     let readError = null
     if (BigInt(band.activePosition?.liquidity || 0) > 0n) {
       try {
-        const observed = await readActivePosition(band, poolState)
+        const observed = await readActivePosition(band, poolState, blockNumber)
         chain = {
           ownerMatches: true,
           liquidityMatches: true,
@@ -1957,6 +1987,7 @@ async function status() {
             leg: band.activePosition.leg,
             tickLower: band.activePosition.tickLower,
             tickUpper: band.activePosition.tickUpper,
+            liquidity: band.activePosition.liquidity,
             priceLowUsdg:
               band.activePosition.priceLowUsdg || directPairPriceAtTick(band.activePosition.tickUpper),
             priceHighUsdg:
@@ -1974,6 +2005,7 @@ async function status() {
       status: state?.status || 'NOT_STARTED',
       evidenceClass: 'LIVE_CHAIN_READBACK_WITH_LOCAL_STATE',
       observedAt: new Date().toISOString(),
+      blockNumber: blockNumber.toString(),
       wallet: WALLET,
       pool: {
         tick: poolState.tick,
@@ -2000,6 +2032,10 @@ async function status() {
             manualPerTransactionApproval: state.policy.manualPerTransactionApproval,
           }
         : null,
+      rpc: {
+        reads: rpcEndpointSummary(RPC_ENDPOINTS),
+        broadcasts: rpcEndpointSummary(BROADCAST_ENDPOINTS),
+      },
       pendingRotation: state?.pendingRotation ? publicRotation(state.pendingRotation) : null,
       dailyUsage: state ? dailyUsage(state) : null,
       accounting: state?.accounting || null,
