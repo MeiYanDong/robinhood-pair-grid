@@ -24,8 +24,9 @@ import {
   DEFAULT_FINITE_MARTINGALE_POLICY,
   decideNextVerifiedBandAction,
   directPairPriceAtTick,
+  maximumAlignedBuyTickForPriceFloor,
   parseMarketEvidence,
-  planHardFloorBuyLadder,
+  planAdaptiveHardFloorBuyLadder,
   planInitialBuyLadder,
   planSellRange,
   positionConversionBps,
@@ -76,8 +77,7 @@ const CONSERVATIVE_THREE_MINT_GAS = 1_100_000n
 const MAXIMUM_BUILD_FRICTION_BPS = 500
 const MINIMUM_DEPLOYMENT_UTILIZATION_BPS = 9_990n
 const ROTATION_REMOVE_SLIPPAGE_BPS = 100n
-const HARD_FLOOR_REBASE_FIRST_TICK = 319_300
-const HARD_FLOOR_REBASE_WIDTH_TICKS = Object.freeze([800, 700, 700, 800])
+const HARD_FLOOR_REBASE_MINIMUM_BAND_WIDTH_TICKS = 300
 const HARD_FLOOR_REBASE_BAND_IDS = Object.freeze(['B2', 'B3', 'B4', 'B5'])
 const MINIMUM_KEEPER_ETH_WEI = BigInt(process.env.PAIR_MARTINGALE_MINIMUM_ETH_WEI || '1000000000000000')
 const MAXIMUM_ROTATION_TRANSACTION_GAS_WEI = BigInt(
@@ -1958,7 +1958,7 @@ function hardFloorSourceBands(state) {
 
 function buildHardFloorRebasePlan(state, poolState) {
   const sources = hardFloorSourceBands(state)
-  return planHardFloorBuyLadder({
+  return planAdaptiveHardFloorBuyLadder({
     bands: sources.map((band) => ({
       id: band.id,
       index: band.index,
@@ -1967,10 +1967,10 @@ function buildHardFloorRebasePlan(state, poolState) {
     })),
     currentTick: poolState.tick,
     sqrtPriceX96: poolState.sqrtPriceX96,
-    firstTickLower: HARD_FLOOR_REBASE_FIRST_TICK,
-    widthTicks: HARD_FLOOR_REBASE_WIDTH_TICKS,
     minimumBuyPriceUsdg: DEFAULT_FINITE_MARTINGALE_POLICY.minimumBuyPriceUsdg,
     tickSpacing: TICK_SPACING,
+    minimumEntryGapTicks: DEFAULT_FINITE_MARTINGALE_POLICY.minimumEntryGapTicks,
+    minimumBandWidthTicks: HARD_FLOOR_REBASE_MINIMUM_BAND_WIDTH_TICKS,
   })
 }
 
@@ -2030,20 +2030,26 @@ function publicHardFloorRebasePlan(state, plan, poolState, allowance = null) {
 }
 
 function hardFloorTargetAlreadyApplied(state) {
-  const expected = [
-    [319_300, 320_100],
-    [320_100, 320_800],
-    [320_800, 321_500],
-    [321_500, 322_300],
-  ]
+  if (state.lastRebase?.id !== 'hard-floor-usdg-v1' || state.lastRebase?.phase !== 'COMPLETE') {
+    return false
+  }
+  const maximumBuyTick = maximumAlignedBuyTickForPriceFloor(
+    DEFAULT_FINITE_MARTINGALE_POLICY.minimumBuyPriceUsdg,
+    TICK_SPACING,
+  )
   return HARD_FLOOR_REBASE_BAND_IDS.every((id, offset) => {
     const band = state.bands.find((candidate) => candidate.id === id)
+    const previous =
+      offset === 0
+        ? null
+        : state.bands.find((candidate) => candidate.id === HARD_FLOOR_REBASE_BAND_IDS[offset - 1])
     return Boolean(
       band?.phase === 'BUY_ACTIVE' &&
       band.activePosition?.leg === 'BUY' &&
       BigInt(band.activePosition?.liquidity || 0) > 0n &&
-      band.activePosition.tickLower === expected[offset][0] &&
-      band.activePosition.tickUpper === expected[offset][1],
+      band.activePosition.tickLower < band.activePosition.tickUpper &&
+      band.activePosition.tickUpper <= maximumBuyTick &&
+      (previous === null || previous.activePosition.tickUpper === band.activePosition.tickLower),
     )
   })
 }

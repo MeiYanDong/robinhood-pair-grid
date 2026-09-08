@@ -10,6 +10,7 @@ import {
   maximumAlignedBuyTickForPriceFloor,
   pairValueUsdgAtomic,
   parseMarketEvidence,
+  planAdaptiveHardFloorBuyLadder,
   planInitialBuyLadder,
   planHardFloorBuyLadder,
   planSellRange,
@@ -173,6 +174,62 @@ test('hard-floor rebase preserves approved allocations and never buys below one 
   assert.ok(plan.selected.bands.every(({ priceLowUsdg }) => priceLowUsdg >= 0.01))
   assert.ok(plan.selected.bands.every(({ amount1Max }) => amount1Max === 0n))
   assert.ok(plan.selected.bands.every(({ amount0Max }, index) => amount0Max <= allocations[index]))
+})
+
+test('adaptive hard-floor rebase follows the live price and consumes the usable floor span', () => {
+  const currentTick = 319_623
+  const allocations = [10_561_431n, 14_081_909n, 17_602_387n, 21_122_867n]
+  const plan = planAdaptiveHardFloorBuyLadder({
+    bands: allocations.map((allocationUsdgAtomic, offset) => ({
+      id: `B${offset + 2}`,
+      index: offset + 1,
+      weightBps: [1_500, 2_000, 2_500, 3_000][offset],
+      allocationUsdgAtomic,
+    })),
+    currentTick,
+    sqrtPriceX96: sqrtRatioAtTick(currentTick),
+    minimumBuyPriceUsdg: 0.01,
+    minimumEntryGapTicks: 200,
+    minimumBandWidthTicks: 300,
+  })
+  assert.deepEqual(
+    plan.selected.bands.map(({ tickLower, tickUpper }) => [tickLower, tickUpper]),
+    [
+      [319_900, 320_500],
+      [320_500, 321_100],
+      [321_100, 321_700],
+      [321_700, 322_300],
+    ],
+  )
+  assert.deepEqual(plan.rangeSelection.widthTicks, [600, 600, 600, 600])
+  assert.equal(plan.rangeSelection.firstTickLower - currentTick, 277)
+  assert.equal(plan.selected.bands.at(-1).tickUpper, plan.maximumBuyTick)
+  assert.ok(plan.selected.bands.every(({ priceLowUsdg }) => priceLowUsdg >= 0.01))
+  assert.ok(plan.selected.bands.every(({ amount1Max }) => amount1Max === 0n))
+})
+
+test('adaptive hard-floor rebase widens outer bands first and waits when four useful bands do not fit', () => {
+  const bands = [10n, 20n, 30n, 40n].map((allocationUsdgAtomic, offset) => ({
+    id: `B${offset + 2}`,
+    index: offset + 1,
+    weightBps: [1_500, 2_000, 2_500, 3_000][offset],
+    allocationUsdgAtomic,
+  }))
+  const plan = planAdaptiveHardFloorBuyLadder({
+    bands,
+    currentTick: 319_500,
+    sqrtPriceX96: sqrtRatioAtTick(319_500),
+  })
+  assert.deepEqual(plan.rangeSelection.widthTicks, [700, 600, 600, 700])
+  assert.throws(
+    () =>
+      planAdaptiveHardFloorBuyLadder({
+        bands,
+        currentTick: 321_200,
+        sqrtPriceX96: sqrtRatioAtTick(321_200),
+      }),
+    /WAIT:.*不足以安全容纳/u,
+  )
 })
 
 test('hard-floor guard fails closed below the floor or after price enters a BUY range', () => {

@@ -97,9 +97,11 @@ npm run martingale-rpc-consensus-check
 npm run martingale-rebase-floor-plan
 ```
 
-The approved migration keeps B1 unchanged, burns B2-B5 one at a time with canonical receipt gates, grants only
-the exact aggregate USDG allowance, then batch-mints four adjacent USDG-only positions above the `0.01` hard
-floor. Start or resume it with:
+The approved migration keeps B1 unchanged, derives four adjacent B2-B5 ranges from the live tick with a
+200-tick entry gap and a `0.01` hard floor, burns the source NFTs one at a time with canonical receipt gates,
+grants only the exact aggregate USDG allowance, then batch-mints the four USDG-only targets. If the live price
+leaves too little useful space above the floor, planning returns `WAIT` before any source NFT is removed. Start
+or resume it with:
 
 ```bash
 npm run martingale-rebase-floor
