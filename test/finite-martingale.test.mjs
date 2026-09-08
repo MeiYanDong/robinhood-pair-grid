@@ -3,12 +3,15 @@ import test from 'node:test'
 
 import {
   buyFillAccounting,
+  assertBuyRangeRespectsPriceFloor,
   decideNextBandAction,
   decideNextVerifiedBandAction,
   directPairPriceAtTick,
+  maximumAlignedBuyTickForPriceFloor,
   pairValueUsdgAtomic,
   parseMarketEvidence,
   planInitialBuyLadder,
+  planHardFloorBuyLadder,
   planSellRange,
   positionConversionBps,
   sellFillAccounting,
@@ -135,6 +138,65 @@ test('three-band degradation preserves the same total deployed principal', () =>
     [14_400_000n, 21_600_000n, 36_000_000n],
   )
   assert.equal(plan.deployableUsdgAtomic, 72_000_000n)
+})
+
+test('hard-floor rebase preserves approved allocations and never buys below one cent', () => {
+  const currentTick = 318_800
+  const allocations = [10_561_431n, 14_081_909n, 17_602_387n, 21_122_867n]
+  const plan = planHardFloorBuyLadder({
+    bands: allocations.map((allocationUsdgAtomic, offset) => ({
+      id: `B${offset + 2}`,
+      index: offset + 1,
+      weightBps: [1_500, 2_000, 2_500, 3_000][offset],
+      allocationUsdgAtomic,
+    })),
+    currentTick,
+    sqrtPriceX96: sqrtRatioAtTick(currentTick),
+    firstTickLower: 319_300,
+    widthTicks: [800, 700, 700, 800],
+    minimumBuyPriceUsdg: 0.01,
+  })
+  assert.deepEqual(
+    plan.selected.bands.map(({ tickLower, tickUpper }) => [tickLower, tickUpper]),
+    [
+      [319_300, 320_100],
+      [320_100, 320_800],
+      [320_800, 321_500],
+      [321_500, 322_300],
+    ],
+  )
+  assert.deepEqual(
+    plan.selected.bands.map(({ allocationUsdgAtomic }) => allocationUsdgAtomic),
+    allocations,
+  )
+  assert.equal(plan.maximumBuyTick, 322_300)
+  assert.ok(plan.selected.bands.every(({ priceLowUsdg }) => priceLowUsdg >= 0.01))
+  assert.ok(plan.selected.bands.every(({ amount1Max }) => amount1Max === 0n))
+  assert.ok(plan.selected.bands.every(({ amount0Max }, index) => amount0Max <= allocations[index]))
+})
+
+test('hard-floor guard fails closed below the floor or after price enters a BUY range', () => {
+  assert.equal(maximumAlignedBuyTickForPriceFloor(0.01, 100), 322_300)
+  assert.throws(
+    () =>
+      assertBuyRangeRespectsPriceFloor({
+        tickLower: 321_500,
+        tickUpper: 322_400,
+        currentTick: 318_800,
+        minimumBuyPriceUsdg: 0.01,
+      }),
+    /WAIT:.*低于硬底价/u,
+  )
+  assert.throws(
+    () =>
+      assertBuyRangeRespectsPriceFloor({
+        tickLower: 319_300,
+        tickUpper: 320_100,
+        currentTick: 319_300,
+        minimumBuyPriceUsdg: 0.01,
+      }),
+    /WAIT:.*不再是 USDG-only/u,
+  )
 })
 
 test('sell floor expands when modeled gas is material to a small band', () => {

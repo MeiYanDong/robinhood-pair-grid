@@ -21,3 +21,7 @@ test('release installer deploys both isolated monitor units', () => {
   assert.match(installer, /robinhood-pair-usdg-martingale-monitor\.service/u)
   assert.match(installer, /robinhood-pair-usdg-martingale-monitor\.timer/u)
 })
+
+test('release installer deploys the resumable hard-floor rebase unit', () => {
+  assert.match(installer, /robinhood-pair-usdg-martingale-rebase-floor\.service/u)
+})

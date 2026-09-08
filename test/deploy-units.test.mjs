@@ -76,6 +76,21 @@ test('isolated martingale keeper has its own credential, state path and 30 secon
   assert.doesNotMatch(status, /LoadCredential/u)
 })
 
+test('hard-floor rebase is an isolated manual-only resumable operation', () => {
+  const rebase = unit('robinhood-pair-usdg-martingale-rebase-floor.service')
+
+  assert.match(rebase, /^Conflicts=robinhood-pair-usdg-martingale\.service$/mu)
+  assert.match(rebase, /^OnFailure=robinhood-pair-grid-alert@%n\.service$/mu)
+  assert.match(
+    rebase,
+    /^LoadCredentialEncrypted=pair-usdg-martingale-private-key:\/etc\/credstore\.encrypted\/pair-usdg-martingale-private-key$/mu,
+  )
+  assert.match(rebase, /^ExecStart=\/usr\/local\/bin\/npm run martingale-rebase-floor$/mu)
+  assert.match(rebase, /^TimeoutStartSec=30min$/mu)
+  assert.doesNotMatch(rebase, /^\[Install\]$/mu)
+  assert.doesNotMatch(rebase, /pair-grid-private-key/u)
+})
+
 test('isolated martingale monitor validates status and successful keeper heartbeat every minute', () => {
   const monitor = unit('robinhood-pair-usdg-martingale-monitor.service')
   const timer = unit('robinhood-pair-usdg-martingale-monitor.timer')

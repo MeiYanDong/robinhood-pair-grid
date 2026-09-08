@@ -110,6 +110,7 @@ install -m 0644 deploy/systemd/robinhood-pair-grid-monitor.service /etc/systemd/
 install -m 0644 deploy/systemd/robinhood-pair-grid-monitor.timer /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-grid-status.service /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale.service /etc/systemd/system/
+install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-rebase-floor.service /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale.timer /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-key-check.service /etc/systemd/system/
 install -m 0644 deploy/systemd/robinhood-pair-usdg-martingale-status.service /etc/systemd/system/
