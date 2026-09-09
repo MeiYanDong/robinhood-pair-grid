@@ -103,3 +103,14 @@ configuration and are always constrained by the available gas balance.
   B1, reserve USDG, and collected fee tokens are excluded from the target principal.
 - Production activation additionally requires a key-derived address check, state transfer readback, one healthy
   `NO_ACTION` keeper invocation, enabled/active timer readback and journal inspection.
+
+## Explicit expanded operating profile
+
+The opt-in budget profile raises UTC daily limits to 20 completed rotations / 80 transactions / 0.004 ETH Gas,
+while preserving all other capital, floor, conversion, profit and single-transaction risk limits. Legacy
+ledgers retain 6 / 18 / 0.002 until explicitly migrated by `martingale-budget-apply`.
+
+New rotations reserve their complete three- or four-transaction path and a padded Gas envelope before burning
+the source. Partial remaining day capacity or insufficient wallet Gas therefore leaves the source NFT intact.
+The envelope uses twice the current Gas quote and conservatively bounded stage estimates. It is enforced again
+before each new signature, without changing the exact-hash recovery of previously signed transactions.
