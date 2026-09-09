@@ -160,3 +160,29 @@ within the existing authority run `PAIR_GRID_UNHALT_CONFIRM=I_UNDERSTAND npm run
 The dedicated clear command rechecks independent RPC consensus and all ordinary position/nonce gates. Observe
 one manual healthy Keeper cycle before restarting its timer, then read back at least one automatic cycle.
 Do not use the legacy PAIR/SPY clear command with a martingale state directory.
+
+## Offline breakout/pullback stress test
+
+Run the real Keeper orchestration, state store, position math, calldata codec, RPC-consensus and persisted
+transaction modules against an offline chain adapter:
+
+```bash
+npm run test:stress -- /private/path/sanitized-production-seed.json
+```
+
+The seed must be a read-only copy with credentials and signed calldata removed; never point the test at the
+live state directory. The adapter creates disposable temporary state, replaces every network client and the
+account loader, and produces synthetic unsigned bytes rather than valid signed transactions. The source
+Keeper code is unchanged except for a test-only completion-promise hook inside its isolated VM. The CLI emits
+`stress-results.json` beside the seed. Synthetic CI fixtures are separate from private production evidence.
+
+Scenarios cover a rise through 0.014, oscillation and pullback, short unconfirmed spikes, floor waits, daily
+limits and UTC rollover, gas exhaustion, RPC/broadcast/receipt failure, reorg/nonce/NFT mismatches, concurrent
+invocations, and persisted burn/mint recovery. A 1,000-cycle seeded path and seven simulated UTC days retain
+the configured capital and gas limits. Unit regression tests run the actual Keeper against interruptions.
+
+This is not an EVM fork, a production load benchmark, or evidence of future profit. Swap fees, liquidity
+movement, block production, gas estimates and receipt outcomes are modeled. Healthy waiting is distinct from
+continuous trading capacity: a floor-blocked target may leave four NFTs plus attributed wallet tokens, and
+an allowance reset can consume a fourth transaction and push mint to the next UTC day. While a pending
+rotation exists the single wallet processes that rotation before other bands.

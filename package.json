@@ -46,7 +46,8 @@
     "martingale-rebase-floor": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs rebase-floor",
     "martingale-resume-rebase-floor": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs resume-rebase-floor",
     "martingale-reconcile-internal-transfer": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs reconcile-internal-transfer",
-    "martingale-clear-halt": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs clear-halt"
+    "martingale-clear-halt": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs clear-halt",
+    "test:stress": "node --experimental-vm-modules scripts/stress/run-martingale-stress.mjs"
   },
   "dependencies": {
     "viem": "2.56.3"
