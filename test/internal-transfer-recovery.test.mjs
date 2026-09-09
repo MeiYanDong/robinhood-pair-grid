@@ -14,6 +14,8 @@ const abi = parseAbi([
 function fixture() {
   const state = {
     status: 'MARTINGALE_ACTIVE',
+    strategyId: 'pair-usdg-finite-martingale-live-1',
+    wallet,
     control: { expectedNextNonce: 28 },
     accounting: { profit: '0', pair: '7' },
     bands: [{ id: 'B1' }],
@@ -113,6 +115,12 @@ const failures = {
   },
   'missing state': (f) => {
     f.input.store.readState = () => null
+  },
+  'wrong wallet': (f) => {
+    f.state.wallet = recipient
+  },
+  'wrong strategy': (f) => {
+    f.state.strategyId = 'legacy'
   },
   'wrong phase': (f) => {
     f.state.status = 'PENDING'
