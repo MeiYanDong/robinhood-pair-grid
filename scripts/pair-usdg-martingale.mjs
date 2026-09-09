@@ -17,6 +17,12 @@ import {
   zeroAddress,
 } from 'viem'
 
+import {
+  EXPANDED_KEEPER_BUDGET,
+  planRotationBudget,
+  guardReservedRotationStep,
+} from '../lib/rotation-budget.mjs'
+
 import { reconcileInternalTransfer } from '../lib/internal-transfer-recovery.mjs'
 
 import { loadSignerAccount } from '../lib/account-loader.mjs'
@@ -964,18 +970,6 @@ async function attachMarketEvidence(inspection) {
   return inspection
 }
 
-function assertRotationCapacity(state) {
-  const limits = keeperLimits(state)
-  const usage = dailyUsage(state)
-  if (usage.rotationCount >= limits.maximumDailyRotations) {
-    throw new Error('WAIT: 已达到 UTC 日换腿次数上限')
-  }
-  if (usage.transactionCount + 3 > limits.maximumDailyTransactions) {
-    throw new Error('WAIT: 今日剩余交易次数不足以完成一次安全换腿')
-  }
-  if (usage.gasWei >= limits.maximumDailyGasWei) throw new Error('WAIT: 已达到 UTC 日 Gas 上限')
-}
-
 async function executeKeeperTransaction({ state, key, label, to, data, metadata = {} }) {
   const limits = keeperLimits(state)
   const existing = state.transactions?.[key]
@@ -989,6 +983,43 @@ async function executeKeeperTransaction({ state, key, label, to, data, metadata 
   const allowedAdditional =
     remainingDaily < limits.maximumTransactionGasWei ? remainingDaily : limits.maximumTransactionGasWei
   if (!existing?.request && allowedAdditional <= 0n) throw new Error('WAIT: 当前交易没有剩余 Gas 预算')
+  let minimumFinalEthWei = limits.minimumKeeperEthWei
+  let maximumCurrentGasWei = allowedAdditional
+  if (!existing?.request && state.pendingRotation?.budget) {
+    const prefix = `rotation_${state.pendingRotation.id.replaceAll('-', '_')}`
+    const stageFor = (transactionKey) =>
+      transactionKey === `${prefix}_burn`
+        ? 'burn'
+        : transactionKey === `${prefix}_mint`
+          ? 'mint'
+          : transactionKey.endsWith('_approval_zero')
+            ? 'approval_zero'
+            : transactionKey.endsWith('_approval_exact')
+              ? 'approval_exact'
+              : null
+    const completedStages = Object.entries(state.transactions || {})
+      .filter(
+        ([transactionKey, transaction]) =>
+          transactionKey.startsWith(`${prefix}_`) && transaction.status === 'CANONICAL_SUCCESS',
+      )
+      .map(([transactionKey]) => stageFor(transactionKey))
+    const [gasPrice, walletEthWei] = await Promise.all([
+      publicClient.getGasPrice(),
+      publicClient.getBalance({ address: WALLET }),
+    ])
+    const reserved = guardReservedRotationStep({
+      budget: state.pendingRotation.budget,
+      stage: stageFor(key),
+      completedStages,
+      limits,
+      usage,
+      gasPrice,
+      walletEthWei,
+    })
+    minimumFinalEthWei = reserved.minimumFinalEthWei
+    maximumCurrentGasWei =
+      reserved.maximumCurrentGasWei < allowedAdditional ? reserved.maximumCurrentGasWei : allowedAdditional
+  }
   if (!existing?.request) await assertPreWriteRpcConsensus(state, label)
   const account = loadAccount()
   const walletClient = createWalletClient({
@@ -1011,9 +1042,9 @@ async function executeKeeperTransaction({ state, key, label, to, data, metadata 
     walletAddress: WALLET,
     chainId: CHAIN_ID,
     store,
-    minimumFinalEthWei: limits.minimumKeeperEthWei,
+    minimumFinalEthWei,
     maximumOperationGasWei:
-      canonicalGasSpent(state) + (existing?.request ? limits.maximumTransactionGasWei : allowedAdditional),
+      canonicalGasSpent(state) + (existing?.request ? limits.maximumTransactionGasWei : maximumCurrentGasWei),
     confirmationDepth: CONFIRMATION_DEPTH,
   })
 }
@@ -1617,11 +1648,11 @@ function publicRotation(pending) {
     trigger: pending.trigger,
     target: pending.target || null,
     sourceBurnTransaction: pending.sourceBurnTransaction || null,
+    budget: pending.budget || null,
   }
 }
 
 async function startRotation(state, inspection, decision) {
-  assertRotationCapacity(state)
   const band = state.bands.find((candidate) => candidate.id === decision.bandId)
   if (!band) throw new Error(`HARD: 找不到待换腿档位 ${decision.bandId}`)
   const fromLeg = band.phase === 'BUY_ACTIVE' ? 'BUY' : 'SELL'
@@ -1655,6 +1686,29 @@ async function startRotation(state, inspection, decision) {
     },
   }
   if (toLeg === 'BUY') pending.target = freshBuyTarget(state, band, inspection.market, inspection.headPool)
+  const [burnGasEstimate, currentTargetAllowance, walletEthWei] = await Promise.all([
+    publicClient.estimateGas({
+      account: WALLET,
+      to: POSITION_MANAGER,
+      data: buildBurn(band.activePosition, inspection.headPool).data,
+      value: 0n,
+    }),
+    publicClient.readContract({
+      address: toLeg === 'BUY' ? USDG : PAIR,
+      abi: ERC20_ABI,
+      functionName: 'allowance',
+      args: [WALLET, PERMIT2],
+    }),
+    publicClient.getBalance({ address: WALLET }),
+  ])
+  pending.budget = planRotationBudget({
+    limits: keeperLimits(state),
+    usage: dailyUsage(state),
+    walletEthWei,
+    gasPrice,
+    burnGasEstimate,
+    currentTargetAllowance,
+  })
   state.pendingRotation = pending
   state.status = 'ROTATION_PENDING'
   store.writeState(state)
@@ -2602,6 +2656,9 @@ async function status() {
             maximumDailyTransactions: state.policy.maximumDailyTransactions,
             maximumDailyRotations: state.policy.maximumDailyRotations,
             maximumDailyGasWei: state.policy.maximumDailyGasWei,
+            maximumTransactionGasWei: state.policy.maximumTransactionGasWei,
+            minimumKeeperEthWei: state.policy.minimumKeeperEthWei,
+            rotationBudgetMode: 'FULL_ROTATION_V1',
             automaticSigning: state.policy.automaticSigning,
             manualPerTransactionApproval: state.policy.manualPerTransactionApproval,
           }
@@ -2659,6 +2716,42 @@ async function reconcile() {
         headBlock: inspection.headBlock,
         safeBlock: inspection.safeBlock,
         observations: inspection.observations,
+      }),
+    )
+  })
+}
+
+async function budgetProfileCommand(apply = false) {
+  await assertRuntimeIdentity()
+  return store.withLock('martingale-budget-profile', async () => {
+    const state = ensureKeeperSchema(store.readState())
+    if (state.pendingRotation || state.pendingRebase || state.pending)
+      throw new Error('HARD: cannot change budgets during an incomplete operation')
+    const consensus = await assertPreWriteRpcConsensus(state, 'budget profile')
+    if (!consensus.verified) throw new Error('HARD: budget profile requires independent RPC consensus')
+    const inspection = await inspectKeeperState(state)
+    const previous = Object.fromEntries(
+      Object.keys(EXPANDED_KEEPER_BUDGET).map((key) => [key, state.policy[key]]),
+    )
+    if (apply) {
+      if (process.env.PAIR_MARTINGALE_BUDGET_CONFIRM !== 'I_AUTHORIZE_EXPANDED_BUDGET')
+        throw new Error('Budget apply requires explicit expanded-budget confirmation')
+      Object.assign(state.policy, EXPANDED_KEEPER_BUDGET)
+      state.budgetUpdatedAt = new Date().toISOString()
+      store.writeState(state)
+      store.appendAudit('keeper_budget_profile_updated', { previous, current: EXPANDED_KEEPER_BUDGET })
+    }
+    console.log(
+      stringify({
+        status: apply ? 'BUDGET_APPLIED' : 'BUDGET_PLAN',
+        previous,
+        proposed: EXPANDED_KEEPER_BUDGET,
+        walletEth: formatEther(inspection.wallet.ethWei),
+        gasFundingTargetEth: '0.01',
+        gasFundingNeededEth: formatEther(
+          inspection.wallet.ethWei < 10000000000000000n ? 10000000000000000n - inspection.wallet.ethWei : 0n,
+        ),
+        strategyParametersOtherwiseUnchanged: true,
       }),
     )
   })
@@ -2747,6 +2840,8 @@ async function main() {
   else if (command === 'reconcile') await reconcile()
   else if (command === 'reconcile-internal-transfer') await internalTransferReconcileCommand()
   else if (command === 'clear-halt') await clearMartingaleHalt()
+  else if (command === 'budget-plan') await budgetProfileCommand()
+  else if (command === 'budget-apply') await budgetProfileCommand(true)
   else if (command === 'rpc-consensus-check') await rpcConsensusCheck()
   else if (command === 'rebase-floor-plan') await hardFloorRebasePlanCommand()
   else if (command === 'rebase-floor' || command === 'resume-rebase-floor') await hardFloorRebase()

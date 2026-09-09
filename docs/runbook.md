@@ -186,3 +186,41 @@ movement, block production, gas estimates and receipt outcomes are modeled. Heal
 continuous trading capacity: a floor-blocked target may leave four NFTs plus attributed wallet tokens, and
 an allowance reset can consume a fourth transaction and push mint to the next UTC day. While a pending
 rotation exists the single wallet processes that rotation before other bands.
+
+## Expanded operating budget with whole-rotation reservation
+
+The explicit expanded profile is 20 completed rotations, 80 transactions and 0.004 ETH canonical strategy Gas
+per UTC day. It leaves the 0.00075 ETH per-transaction ceiling and 0.001 ETH minimum wallet reserve unchanged.
+Twenty rotations permit two complete five-band SELL/BUY round trips; this is an operating ceiling, not a
+promise that market conditions produce that many trades. Existing ledgers keep their current profile until
+explicit application:
+
+```bash
+npm run martingale-budget-plan
+PAIR_MARTINGALE_BUDGET_CONFIRM=I_AUTHORIZE_EXPANDED_BUDGET npm run martingale-budget-apply
+```
+
+Stop the dedicated timer first. Both commands require independent RPC consensus and consistent nonce/NFT
+state, with no pending rotation or rebase. The apply command changes only the three day-budget fields and
+records an audit event. It does not sign, transfer ETH, change LP parameters or clear a halt. Keep the three
+corresponding root-owned environment settings consistent with the ledger after explicit application; the
+existing ledger is authoritative over environment defaults.
+
+Before a source burn, the Keeper reserves three transactions when target allowance is zero, or four when
+an allowance reset may be needed. It reserves padded Gas for the burn (at least 300,000 estimated units or
+the actual estimate, whichever is higher), each approval (80,000) and mint (500,000), at twice the observed
+Gas price, using the same transaction padding as the persisted executor. The whole reservation must fit the
+remaining daily budget, each transaction ceiling and the wallet reserve. Each new transaction must preserve
+the budget of the remaining stages. Reservations release automatically when the rotation completes; unused
+headroom is not accounted as spent. Already signed intent always resumes byte-identically.
+
+A price spike beyond the Gas buffer or a contract estimate above a reserved stage can still pause execution.
+The reservation is a bounded admission rule, not a guarantee about future network conditions. No unlimited
+Gas or automatic external wallet transfer is introduced. A 0.01 ETH operating balance is the suggested funding
+target; ETH funding is separate from strategy principal and realized token profit.
+
+Compare budgets with the offline adapter (synthetic demand and Gas, not production profitability):
+
+```bash
+node --experimental-vm-modules scripts/stress/compare-martingale-budgets.mjs /private/path/sanitized-production-seed.json
+```

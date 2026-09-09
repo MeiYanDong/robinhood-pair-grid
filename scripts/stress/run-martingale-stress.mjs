@@ -245,7 +245,7 @@ await scenario('receipt-timeout-after-mint-and-restart', async (s) => {
   assert.equal(resumed.mined, 0)
   assert.equal(resumed.pending, null)
 })
-await scenario('three-transaction-slots-with-nonzero-allowance', async (s) => {
+await scenario('four-slot-reservation-keeps-source-NFT-before-UTC-rollover', async (s) => {
   const state = s.state
   for (let i = 0; i < 9; i++)
     state.transactions[`synthetic-prior-${i}`] = {
@@ -256,20 +256,16 @@ await scenario('three-transaction-slots-with-nonzero-allowance', async (s) => {
   fs.writeFileSync(s.statePath, JSON.stringify(state))
   s.allowances.set('0x5fc5360d0400a0fd4f2af552add042d716f1d168', 1n)
   s.advance(0.0142)
-  const interrupted = await s.run()
-  assert.equal(interrupted.mined, 3)
-  assert.equal(interrupted.nfts, 4)
-  assert.ok(interrupted.pending)
   const waiting = await s.run()
   assert.equal(waiting.mined, 0)
-  assert.equal(waiting.halted, false)
+  assert.equal(waiting.nfts, 5)
+  assert.equal(waiting.pending, null)
   s.clock = Date.parse('2026-09-10T00:00:01Z')
   const resumed = await s.run()
   assert.equal(status(resumed), 'ROTATION_COMPLETE')
   assert.equal(resumed.nfts, 5)
   return {
-    observation:
-      'Exact-allowance reset can need 4 transactions; with 3 slots left, mint safely waits for next UTC day',
+    observation: 'Four slots are reserved before burn; source stays intact with only three slots left',
   }
 })
 await scenario('1000-seeded-oscillation-cycles', async (s) => {
