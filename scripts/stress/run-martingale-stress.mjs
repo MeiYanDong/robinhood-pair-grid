@@ -52,13 +52,14 @@ await scenario('breakout-oscillation-pullback', async (s) => {
     assert.ok(r.mined <= 4)
     rows.push({ price, status: status(r), reason: reason(r), phases: r.phases })
   }
-  assert.equal(s.mined.length, 12)
-  assert.ok(s.state.bands.every((b) => b.phase === 'SELL_ACTIVE'))
+  assert.equal(s.mined.length, 10)
+  assert.equal(s.state.bands[3].phase, 'BUY_ACTIVE')
   assert.equal(s.state.bands[2].cycleNumber, 2)
-  assert.equal(s.state.bands[3].cycleNumber, 2)
+  assert.equal(s.state.bands[3].cycleNumber, 1)
   assert.equal(s.state.bands[4].activePosition.tokenId, seed.bands[4].activePosition.tokenId)
   return {
-    observation: 'B3/B4 completed round trips; B5 retained original NFT because fresh BUY violated floor',
+    observation:
+      'Legacy 18-slot budget finishes B3 but defers B4 after residual-allowance reset costs; B5 retains its NFT at the floor',
     rows,
   }
 })
@@ -153,6 +154,25 @@ await scenario('receipt-timeout-after-burn-and-restart', async (s) => {
   assert.equal(status(recovered), 'ROTATION_COMPLETE')
   assert.equal(s.mined.filter((t) => t.hash === hash).length, 1)
 })
+for (const reset of [false, true])
+  await scenario(`approval-${reset ? 'zero' : 'exact'}-receipt-timeout-and-restart`, async (s) => {
+    if (reset) s.allowances.set('0x5fc5360d0400a0fd4f2af552add042d716f1d168', 1n)
+    s.advance(0.0142)
+    s.fault.receiptUnavailableAfter = 'approve'
+    const interrupted = await s.run()
+    assert.ok(interrupted.pending)
+    assert.equal(interrupted.mined, 2)
+    const originalHashes = s.mined.map((t) => t.hash)
+    s.fault = {}
+    const recovered = await s.run()
+    assert.equal(status(recovered), 'ROTATION_COMPLETE')
+    assert.equal(recovered.halted, false)
+    assert.equal(s.mined.length, reset ? 4 : 3)
+    for (const hash of originalHashes) assert.equal(s.mined.filter((t) => t.hash === hash).length, 1)
+    assert.ok(Object.values(s.state.transactions).every((t) => t.status === 'CANONICAL_SUCCESS'))
+    assertMartingaleReadbackReport((await s.run('status')).entries[0])
+  })
+
 await scenario('canonical-reorg-after-mining', async (s) => {
   s.advance(0.0142)
   s.fault.reorgAfterMine = true
@@ -220,7 +240,7 @@ await scenario('same-day-rotation-limit-and-next-UTC-day', async (s) => {
   }
   assert.equal(
     s.state.history.filter((h) => h.kind === 'ROTATION' && h.completedAt?.startsWith('2026-09-09')).length,
-    6,
+    5,
   )
   const r = await s.run()
   assert.equal(status(r), 'WAITING_NO_ACTION')
@@ -229,7 +249,8 @@ await scenario('same-day-rotation-limit-and-next-UTC-day', async (s) => {
   const next = await s.run()
   assert.equal(status(next), 'ROTATION_COMPLETE')
   return {
-    observation: 'remaining same-day allowance handles 4 more rotations; last band waits until UTC rollover',
+    observation:
+      'Legacy transaction slots admit 3 additional rotations with residual approval resets; next band resumes after UTC rollover',
   }
 })
 await scenario('receipt-timeout-after-mint-and-restart', async (s) => {

@@ -1050,6 +1050,22 @@ async function executeKeeperTransaction({ state, key, label, to, data, metadata 
 }
 
 async function ensureTokenAllowanceExact(state, token, amount, keyPrefix) {
+  // A landed approval can change allowance before its receipt is persisted. Resume
+  // the original intent first, even when the live allowance already equals target.
+  for (const suffix of ['approval_zero', 'approval_exact']) {
+    const key = `${keyPrefix}_${suffix}`
+    const existing = state.transactions?.[key]
+    if (existing?.request && existing.status !== 'CANONICAL_SUCCESS') {
+      await executeKeeperTransaction({
+        state,
+        key,
+        label: `${keyPrefix}：恢复授权回执`,
+        to: existing.request.to,
+        data: existing.request.data,
+        metadata: existing.metadata,
+      })
+    }
+  }
   const current = await publicClient.readContract({
     address: token,
     abi: ERC20_ABI,
