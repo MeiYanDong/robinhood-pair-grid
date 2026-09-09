@@ -2427,10 +2427,12 @@ async function keeperOnce() {
     store.assertNotHalted()
     const state = ensureKeeperSchema(store.readState())
     if (state.pendingRebase) return resumeHardFloorRebaseOrWait(state)
+    // Persisted transactions temporarily set PENDING_<key>; resume their exact
+    // intent before applying the idle-state allowlist, just as for rebases.
+    if (state.pendingRotation) return resumeRotationOrWait(state)
     if (!['BUY_LADDER_ACTIVE', 'MARTINGALE_ACTIVE', 'ROTATION_PENDING'].includes(state.status)) {
       throw new Error(`HARD: 当前状态 ${state.status} 不能运行 Keeper`)
     }
-    if (state.pendingRotation) return resumeRotationOrWait(state)
     let inspection
     try {
       inspection = await inspectKeeperState(state)
