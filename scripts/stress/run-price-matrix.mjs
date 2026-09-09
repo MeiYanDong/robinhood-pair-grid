@@ -76,6 +76,7 @@ for (const [id, label, prices] of paths) {
       rows = [],
       injections = []
     let failure = null
+    let protectedHalt = false
     try {
       for (let i = 0; i < prices.length; i++) {
         // UTC transitions ensure the suite cannot pass merely by waiting at one day's cap.
@@ -107,7 +108,29 @@ for (const [id, label, prices] of paths) {
         const state = s.state
         const status = r.entries.find((e) => e?.status)?.status || `EXIT_${r.exitCode}`
         counts[status] = (counts[status] || 0) + 1
-        assert.equal(r.halted, false, JSON.stringify(r.entries))
+        if (r.halted) {
+          assert.equal(
+            s.mined.at(-1)?.kind,
+            'reverted',
+            'only a modeled on-chain revert permits a protective halt',
+          )
+          const beforeHalt = s.mined.length
+          for (let retry = 0; retry < 3; retry++) {
+            const stopped = await s.run()
+            assert.equal(stopped.halted, true)
+            assert.equal(s.mined.length, beforeHalt, 'halt prevents all subsequent transactions')
+          }
+          protectedHalt = true
+          rows.push({
+            step: i,
+            price: prices[i],
+            status: 'PROTECTED_HALT_REVERT',
+            mined: r.mined,
+            pending: r.pending,
+            eth: s.eth.toString(),
+          })
+          break
+        }
         if (!Object.keys(s.fault).length) assert.equal(r.exitCode, 0, JSON.stringify(r.entries))
         assert.ok(s.mined.length - before <= 4, 'at most one four-stage rotation per invocation')
         assert.ok(s.eth >= BigInt(state.policy.minimumKeeperEthWei), 'minimum ETH reserve retained')
@@ -124,7 +147,23 @@ for (const [id, label, prices] of paths) {
         for (const band of state.bands) {
           if (BigInt(band.activePosition.liquidity) > 0n) {
             const p = s.positions.get(band.activePosition.tokenId)
-            assert.ok(p, 'ledger NFT exists')
+            if (!p) {
+              const pending = state.pendingRotation
+              const burn = pending && state.transactions[`rotation_${pending.id.replaceAll('-', '_')}_burn`]
+              assert.equal(
+                pending?.sourceTokenId,
+                band.activePosition.tokenId,
+                'only pending source may be absent',
+              )
+              assert.equal(pending.phase, 'SOURCE_BURN_PLANNED')
+              assert.ok(
+                burn?.request &&
+                  burn.status !== 'CANONICAL_SUCCESS' &&
+                  s.receipts.get(burn.hash)?.status === 'success',
+                'missing source is attributed to the exact mined burn awaiting receipt',
+              )
+              continue
+            }
             assert.equal(p.liquidity, BigInt(band.activePosition.liquidity), 'liquidity agreement')
             assert.equal(p.owner.toLowerCase(), s.wallet.toLowerCase(), 'owner agreement')
             if (band.activePosition.leg === 'BUY')
@@ -156,10 +195,10 @@ for (const [id, label, prices] of paths) {
       s.fault = {}
       s.gasPrice = 225280000n
       // Resolve any final receipt on a fresh process without changing the final price.
-      await s.run()
+      if (!protectedHalt) await s.run()
       const readback = await s.run('status')
       assert.equal(readback.exitCode, 0)
-      assertMartingaleReadbackReport(readback.entries[0])
+      if (!protectedHalt) assertMartingaleReadbackReport(readback.entries[0])
     } catch (error) {
       failure = error.message
     }
@@ -168,6 +207,7 @@ for (const [id, label, prices] of paths) {
       label,
       profile: profile.name,
       pass: !failure,
+      outcome: protectedHalt ? 'PROTECTED_HALT_REQUIRES_RECONCILIATION' : 'HEALTHY',
       error: failure,
       steps: rows.length,
       counts,

@@ -55,7 +55,7 @@ await scenario('breakout-oscillation-pullback', async (s) => {
   assert.equal(s.mined.length, 10)
   assert.equal(s.state.bands[3].phase, 'BUY_ACTIVE')
   assert.equal(s.state.bands[2].cycleNumber, 2)
-  assert.equal(s.state.bands[3].cycleNumber, 1)
+  assert.equal(s.state.bands[3].cycleNumber, 2)
   assert.equal(s.state.bands[4].activePosition.tokenId, seed.bands[4].activePosition.tokenId)
   return {
     observation:

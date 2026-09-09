@@ -312,7 +312,15 @@ export class StressRuntime {
         const request = self.signed.get(serializedTransaction)
         assert.ok(request, 'only synthetic signed requests can be broadcast')
         assert.equal(request.nonce, self.nonce, 'no duplicate or skipped nonce')
-        const operation = self.check(request)
+        let operation
+        try {
+          operation = self.check(request)
+        } catch (error) {
+          if (error.message !== 'simulated slippage revert') throw error
+          // A stale signed transaction can be accepted and revert on chain.
+          // It consumes nonce/Gas but never mutates token or NFT balances.
+          operation = { kind: 'reverted' }
+        }
         const gasUsed = operation.kind === 'approve' ? 45000n : 230000n
         assert.ok(gasUsed <= request.gas, 'transaction gas limit covers execution')
         assert.ok(self.eth >= gasUsed * request.gasPrice, 'gas solvency before state mutation')
@@ -357,7 +365,7 @@ export class StressRuntime {
         self.head += 128n
         self.clock += 12800
         const receipt = {
-          status: 'success',
+          status: operation.kind === 'reverted' ? 'reverted' : 'success',
           transactionHash: hash,
           blockNumber,
           blockHash: self.blockHash(blockNumber),

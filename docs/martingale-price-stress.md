@@ -21,3 +21,7 @@ When an approval is mined but its receipt read times out, allowance can already 
 ## Synthetic mint accounting
 
 Mint debits calculated token amounts, not maximum input allowances. Residual allowances therefore remain and subsequent rotations may need a fourth transaction to reset approval. The adapter also rejects insufficient execution Gas limits or ETH before mutating simulated chain state. These checks avoid optimistic capacity results caused by always clearing allowances in the mock.
+
+## Signed transactions overtaken by price changes
+
+The adapter models a stale signed burn as an accepted transaction with a reverted receipt: Gas and nonce are consumed, while token balances and the source NFT remain intact. A protective halt is accepted only when that explicit reverted transaction explains it, and three later invocations must send no further transaction. The report labels this outcome `PROTECTED_HALT_REQUIRES_RECONCILIATION`; it is not a healthy uninterrupted trading result. During receipt delays, a missing source NFT is accepted only when the exact persisted source burn explains it. Other missing NFTs still fail the test.
