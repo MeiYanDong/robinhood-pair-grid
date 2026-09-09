@@ -17,6 +17,8 @@ import {
   zeroAddress,
 } from 'viem'
 
+import { reconcileInternalTransfer } from '../lib/internal-transfer-recovery.mjs'
+
 import { loadSignerAccount } from '../lib/account-loader.mjs'
 import {
   assertBuyRangeRespectsPriceFloor,
@@ -2660,6 +2662,56 @@ async function reconcile() {
   })
 }
 
+async function internalTransferReconcileCommand() {
+  await assertRuntimeIdentity()
+  if (process.env.PAIR_MARTINGALE_INTERNAL_TRANSFER_CONFIRM !== 'I_CONFIRM_INTERNAL_TRANSFER') {
+    throw new Error('Internal transfer reconciliation requires explicit classification confirmation')
+  }
+  const report = await reconcileInternalTransfer({
+    store,
+    clients: directReadClients,
+    wallet: WALLET,
+    token: PAIR,
+    hash: process.env.PAIR_MARTINGALE_INTERNAL_TRANSFER_HASH || '',
+    recipient: process.env.PAIR_MARTINGALE_INTERNAL_TRANSFER_RECIPIENT || '',
+    amount: BigInt(process.env.PAIR_MARTINGALE_INTERNAL_TRANSFER_AMOUNT_WEI || '0'),
+    consensus: () =>
+      verifyRpcConsensus({
+        clients: directReadClients,
+        expectedChainId: CHAIN_ID,
+        walletAddress: WALLET,
+        confirmationDepth: CONFIRMATION_DEPTH,
+        maximumHeadDivergence: MAXIMUM_RPC_HEAD_DIVERGENCE,
+        readPoolState: getPoolStateWithClient,
+      }),
+    inspect: inspectKeeperState,
+  })
+  console.log(stringify(report))
+}
+
+async function clearMartingaleHalt() {
+  await assertRuntimeIdentity()
+  return store.withLock('martingale-clear-halt', async () => {
+    const state = ensureKeeperSchema(store.readState())
+    if (
+      state.pending ||
+      state.pendingRotation ||
+      state.pendingRebase ||
+      Object.values(state.transactions || {}).some(
+        (transaction) => transaction.status !== 'CANONICAL_SUCCESS',
+      )
+    )
+      throw new Error('HARD: incomplete transaction state')
+    const consensus = await assertPreWriteRpcConsensus(state, 'clear halt')
+    if (!consensus.verified) throw new Error('HARD: clear halt requires RPC consensus')
+    await inspectKeeperState(state)
+    const previous = store.clearHalt(process.env.PAIR_GRID_UNHALT_CONFIRM)
+    console.log(
+      stringify({ status: 'HALT_CLEARED', previous, expectedNextNonce: state.control.expectedNextNonce }),
+    )
+  })
+}
+
 async function rpcConsensusCheck() {
   await assertRuntimeIdentity()
   const state = ensureKeeperSchema(store.readState())
@@ -2691,6 +2743,8 @@ async function main() {
   else if (command === 'key-check') await keyCheck()
   else if (command === 'keeper-once') await keeperOnce()
   else if (command === 'reconcile') await reconcile()
+  else if (command === 'reconcile-internal-transfer') await internalTransferReconcileCommand()
+  else if (command === 'clear-halt') await clearMartingaleHalt()
   else if (command === 'rpc-consensus-check') await rpcConsensusCheck()
   else if (command === 'rebase-floor-plan') await hardFloorRebasePlanCommand()
   else if (command === 'rebase-floor' || command === 'resume-rebase-floor') await hardFloorRebase()

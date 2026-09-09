@@ -128,3 +128,35 @@ restart the timer.
 
 Disable the timer first. `npm run exit` removes liquidity and retains the resulting tokens; it does not market
 sell them. An exit failure follows the same HALTED and reconcile process.
+
+## Reconcile an already confirmed internal PAIR transfer
+
+If an explicitly identified manual PAIR transfer consumed exactly the next wallet nonce, the ordinary
+martingale reconciler deliberately refuses to guess its meaning. Stop the dedicated Keeper timer and preserve
+the halt and state. With no pending strategy intent, the following non-signing command can accept that one
+canonical transfer after independent RPC verification:
+
+```bash
+PAIR_MARTINGALE_INTERNAL_TRANSFER_CONFIRM=I_CONFIRM_INTERNAL_TRANSFER \
+PAIR_MARTINGALE_INTERNAL_TRANSFER_HASH=<confirmed-hash> \
+PAIR_MARTINGALE_INTERNAL_TRANSFER_RECIPIENT=<user-controlled-recipient> \
+PAIR_MARTINGALE_INTERNAL_TRANSFER_AMOUNT_WEI=<exact-PAIR-atomic-amount> \
+npm run martingale-reconcile-internal-transfer
+```
+
+The operator must establish common ownership; the chain cannot prove it. The command requires exact calldata,
+only the matching PAIR Transfer event, a successful canonical receipt below the common safe block, a single
+explained nonce increment, and all normal wallet/NFT/pool checks. It does not load a signer. Unknown pending
+nonces, other calls, extra receipt logs and incomplete rotations/rebases remain hard failures.
+
+The ledger stores the transfer under `internalTransfers`, separately from strategy transactions. Strategy
+principal, realized profit, daily strategy usage and existing token accounting remain unchanged. The manual
+transaction gas is recorded on the internal-transfer record. Portfolio accounting must offset the sender and
+recipient token movements by the same hash; the amount is neither external capital nor strategy profit.
+An identical retry is idempotent. Reconciliation retains HALTED.
+
+Then run ordinary `martingale-reconcile`, review current conversion observations, and only if activation is
+within the existing authority run `PAIR_GRID_UNHALT_CONFIRM=I_UNDERSTAND npm run martingale-clear-halt`.
+The dedicated clear command rechecks independent RPC consensus and all ordinary position/nonce gates. Observe
+one manual healthy Keeper cycle before restarting its timer, then read back at least one automatic cycle.
+Do not use the legacy PAIR/SPY clear command with a martingale state directory.
