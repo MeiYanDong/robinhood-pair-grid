@@ -44,7 +44,9 @@
     "martingale-rpc-consensus-check": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs rpc-consensus-check",
     "martingale-rebase-floor-plan": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs rebase-floor-plan",
     "martingale-rebase-floor": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs rebase-floor",
-    "martingale-resume-rebase-floor": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs resume-rebase-floor"
+    "martingale-resume-rebase-floor": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs resume-rebase-floor",
+    "martingale-reconcile-internal-transfer": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs reconcile-internal-transfer",
+    "martingale-clear-halt": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs clear-halt"
   },
   "dependencies": {
     "viem": "2.56.3"
