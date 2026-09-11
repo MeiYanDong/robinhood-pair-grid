@@ -20,6 +20,8 @@ const poolKey = { currency0: USDG, currency1: PAIR, fee: 10000, tickSpacing: 100
 const poolId = '0x97f48c8d9639b7940874b6c6a43b3d606d070a694920b545acff9c35926593a6'
 const abi = viem.parseAbi([
   'function approve(address,uint256) returns(bool)',
+  'function approve(address token,address spender,uint160 amount,uint48 expiration)',
+  'function execute(bytes commands,bytes[] inputs,uint256 deadline) payable',
   'function multicall(bytes[]) returns(bytes[])',
   'function modifyLiquidities(bytes,uint256)',
 ])
@@ -55,6 +57,7 @@ export class StressRuntime {
       [lower(USDG), 0n],
       [lower(PAIR), 0n],
     ])
+    this.routerAllowances = new Map()
     this.signed = new Map()
     this.receipts = new Map()
     this.transactions = new Map()
@@ -106,6 +109,38 @@ export class StressRuntime {
   /** @returns {any} */
   decode(request) {
     const decoded = viem.decodeFunctionData({ abi, data: request.data })
+    if (decoded.functionName === 'approve' && decoded.args.length === 4)
+      return {
+        kind: 'router_approve',
+        token: decoded.args[0],
+        spender: decoded.args[1],
+        amount: decoded.args[2],
+        expiration: decoded.args[3],
+      }
+    if (decoded.functionName === 'execute') {
+      assert.equal(decoded.args[0], '0x10')
+      assert.ok(BigInt(decoded.args[2]) >= BigInt(Math.floor(this.clock / 1000)), 'swap deadline')
+      const [actions, params] = viem.decodeAbiParameters(
+        viem.parseAbiParameters('bytes actions,bytes[] params'),
+        decoded.args[1][0],
+      )
+      assert.equal(actions, '0x060b0e')
+      const [swap] = viem.decodeAbiParameters(
+        viem.parseAbiParameters(
+          '((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint256 minHopPriceX36,bytes hookData) params',
+        ),
+        params[0],
+      )
+      const [currency, recipient] = viem.decodeAbiParameters(
+        viem.parseAbiParameters('address,address,uint256'),
+        params[2],
+      )
+      assert.equal(lower(currency), lower(USDG))
+      assert.equal(lower(recipient), lower(this.wallet))
+      assert.equal(swap.zeroForOne, false)
+      assert.deepEqual(swap.poolKey, poolKey)
+      return { kind: 'swap', amount: swap.amountIn, minimum: swap.amountOutMinimum, router: request.to }
+    }
     if (decoded.functionName === 'approve')
       return { kind: 'approve', token: request.to, amount: decoded.args[1] }
     const inner =
@@ -132,6 +167,17 @@ export class StressRuntime {
   }
   check(request) {
     const operation = this.decode(request)
+    if (operation.kind === 'swap') {
+      const output = (((operation.amount * (1n << 192n)) / sqrtRatioAtTick(this.tickAt()) ** 2n) * 99n) / 100n
+      assert.ok(operation.amount <= this.pair, 'swap input solvency')
+      assert.ok((this.allowances.get(lower(PAIR)) || 0n) >= operation.amount, 'ERC20 swap allowance')
+      assert.ok(
+        (this.routerAllowances.get(lower(operation.router))?.[0] || 0n) >= operation.amount,
+        'Router swap allowance',
+      )
+      if (output < operation.minimum) throw new Error('simulated slippage revert')
+      return { ...operation, output }
+    }
     if (operation.kind === 'burn') {
       const position = this.positions.get(String(operation.id))
       assert.ok(position, 'burn must refer to a live NFT')
@@ -267,7 +313,9 @@ export class StressRuntime {
                 ? self.pair
                 : 0n
         if (functionName === 'allowance')
-          return lower(address) === lower(PERMIT) ? [0n, 0, 0] : self.allowances.get(lower(address)) || 0n
+          return lower(address) === lower(PERMIT)
+            ? self.routerAllowances.get(lower(args[2])) || [0n, 0, 0]
+            : self.allowances.get(lower(address)) || 0n
         const position = self.positions.get(String(args[0]))
         if (!position) throw new Error('ownerOf reverted')
         if (functionName === 'ownerOf') return self.fault.ownerMismatch ? ZERO : position.owner
@@ -276,6 +324,13 @@ export class StressRuntime {
         if (functionName === 'getPoolAndPositionInfo')
           return [poolKey, (BigInt(position.tickLower) << 8n) | (BigInt(position.tickUpper) << 32n)]
         throw new Error(`unimplemented offline read ${functionName}`)
+      },
+      async simulateContract({ functionName, args }) {
+        gate()
+        assert.equal(functionName, 'quoteExactInputSingle')
+        const output =
+          (((args[0].exactAmount * (1n << 192n)) / sqrtRatioAtTick(self.tickAt()) ** 2n) * 99n) / 100n
+        return { result: [self.fault.quoteTooLow ? output / 2n : output, 250000n] }
       },
       async call(request) {
         self.check(request)
@@ -327,6 +382,19 @@ export class StressRuntime {
         const gas = gasUsed * request.gasPrice
         let logs = []
         if (operation.kind === 'approve') self.allowances.set(lower(operation.token), operation.amount)
+        if (operation.kind === 'router_approve')
+          self.routerAllowances.set(lower(operation.spender), [operation.amount, operation.expiration, 0])
+        if (operation.kind === 'swap') {
+          self.pair -= operation.amount
+          self.usdg += operation.output
+          self.allowances.set(lower(PAIR), (self.allowances.get(lower(PAIR)) || 0n) - operation.amount)
+          const permit = self.routerAllowances.get(lower(operation.router))
+          permit[0] -= operation.amount
+          logs = [
+            self.tokenLog(PAIR, self.wallet, PM, operation.amount),
+            self.tokenLog(USDG, PM, self.wallet, operation.output),
+          ]
+        }
         if (operation.kind === 'burn') {
           self.positions.delete(String(operation.id))
           self.usdg += operation.amount0
@@ -405,6 +473,7 @@ export class StressRuntime {
         PAIR_MARTINGALE_RUN_DIR: this.dir,
         PAIR_MARTINGALE_LIVE_ARM: 'I_AUTHORIZE_FINITE_MARTINGALE',
         PAIR_MARTINGALE_EXIT_CONFIRM: 'I_AUTHORIZE_WITHDRAW_ALL_FIVE',
+        PAIR_MARTINGALE_LIQUIDATE_CONFIRM: 'I_AUTHORIZE_SELL_ALL_PAIR',
         PAIR_MARTINGALE_REQUIRE_RPC_CONSENSUS: '1',
       },
       argv: ['node', 'offline', command],
@@ -529,7 +598,8 @@ export class StressRuntime {
       !result.halted &&
       result.exitCode === 0 &&
       !this.state.pendingWithdrawal &&
-      this.state.status !== 'WITHDRAWN'
+      !['WITHDRAWN', 'LIQUIDATED'].includes(this.state.status) &&
+      !this.state.pendingLiquidation
     )
       assert.equal(this.positions.size, 5, 'five live NFTs after a healthy cycle')
     return result
