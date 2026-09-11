@@ -21,6 +21,7 @@ import {
   EXPANDED_KEEPER_BUDGET,
   planRotationBudget,
   guardReservedRotationStep,
+  paddedTransactionCost,
 } from '../lib/rotation-budget.mjs'
 
 import { reconcileInternalTransfer } from '../lib/internal-transfer-recovery.mjs'
@@ -2496,6 +2497,10 @@ async function keeperOnce() {
   return store.withLock('martingale-keeper-once', async () => {
     store.assertNotHalted()
     const state = ensureKeeperSchema(store.readState())
+    if (state.pendingWithdrawal || state.status === 'WITHDRAWN') {
+      console.log(stringify({ status: 'WITHDRAWAL_PAUSED', reason: 'EXPLICIT_WITHDRAW_COMMAND_REQUIRED' }))
+      return
+    }
     if (state.pendingRebase) return resumeHardFloorRebaseOrWait(state)
     // Persisted transactions temporarily set PENDING_<key>; resume their exact
     // intent before applying the idle-state allowlist, just as for rebases.
@@ -2592,6 +2597,170 @@ async function enter() {
   })
 }
 
+async function withdrawAllPlan(state) {
+  if (Object.values(state.transactions || {}).some((t) => t.status !== 'CANONICAL_SUCCESS'))
+    throw new Error('HARD: 存在未完成交易回执，不能开始全撤')
+  if (state.pendingRotation || state.pendingRebase || state.pendingWithdrawal)
+    throw new Error('HARD: 存在未完成操作，先恢复原操作')
+  if (!['MARTINGALE_ACTIVE', 'BUY_LADDER_ACTIVE'].includes(state.status))
+    throw new Error('HARD: 当前状态不允许开始全撤')
+  const inspection = await inspectKeeperState(state)
+  await assertPreWriteRpcConsensus(state, 'withdraw-all-plan')
+  const limits = keeperLimits(state)
+  const usage = dailyUsage(state)
+  const gasPrice = await publicClient.getGasPrice()
+  const positions = []
+  for (const band of state.bands) {
+    const burn = buildBurn(band.activePosition, inspection.headPool)
+    await publicClient.call({ account: WALLET, to: POSITION_MANAGER, data: burn.data })
+    const estimate = await publicClient.estimateGas({
+      account: WALLET,
+      to: POSITION_MANAGER,
+      data: burn.data,
+    })
+    const gasBudgetWei = paddedTransactionCost(estimate, gasPrice * 2n)
+    if (gasBudgetWei > limits.maximumTransactionGasWei) throw new Error('WAIT: 撤仓 Gas 超过单笔上限')
+    positions.push({
+      bandId: band.id,
+      ...band.activePosition,
+      gasBudgetWei: gasBudgetWei.toString(),
+      expectedUsdgAtomic: burn.principal.amount0.toString(),
+      expectedPairWei: burn.principal.amount1.toString(),
+    })
+  }
+  const totalGasWei = positions.reduce((sum, p) => sum + BigInt(p.gasBudgetWei), 0n)
+  if (positions.length !== 5) throw new Error('HARD: 本次全撤仅允许独立账户的五个仓位')
+  if (
+    usage.transactionCount + positions.length > limits.maximumDailyTransactions ||
+    usage.gasWei + totalGasWei > limits.maximumDailyGasWei
+  )
+    throw new Error('WAIT: 全撤日交易或 Gas 预算不足')
+  if (inspection.wallet.ethWei < limits.minimumKeeperEthWei + totalGasWei)
+    throw new Error('WAIT: 全撤 Gas 余额不足')
+  return {
+    status: 'WITHDRAW_ALL_READY',
+    wallet: WALLET,
+    positions,
+    totalGasBudgetWei: totalGasWei.toString(),
+    expectedNonce: state.control.expectedNextNonce,
+    observedAt: new Date().toISOString(),
+    walletBefore: {
+      usdgAtomic: inspection.wallet.usdgAtomic.toString(),
+      pairWei: inspection.wallet.pairWei.toString(),
+      ethWei: inspection.wallet.ethWei.toString(),
+    },
+  }
+}
+
+async function withdrawAllCommand(execute = false) {
+  await assertRuntimeIdentity()
+  return store.withLock('martingale-withdraw-all', async () => {
+    store.assertNotHalted()
+    const state = ensureKeeperSchema(store.readState())
+    if (state.status === 'WITHDRAWN' && !state.pendingWithdrawal) {
+      console.log(stringify({ status: 'WITHDRAWN', withdrawal: state.lastWithdrawal }))
+      return
+    }
+    if (!execute) {
+      console.log(stringify(await withdrawAllPlan(state)))
+      return
+    }
+    assertLiveArm()
+    if (process.env.PAIR_MARTINGALE_EXIT_CONFIRM !== 'I_AUTHORIZE_WITHDRAW_ALL_FIVE')
+      throw new Error('缺少五仓全撤明确确认')
+    if (!state.pendingWithdrawal) {
+      const plan = await withdrawAllPlan(state)
+      state.pendingWithdrawal = {
+        id: `withdraw_${state.control.expectedNextNonce}`,
+        plan,
+        burns: {},
+        startedAt: new Date().toISOString(),
+      }
+      state.status = 'WITHDRAWAL_PENDING'
+      store.writeState(state)
+      store.appendAudit('withdrawal_planned', state.pendingWithdrawal)
+    }
+    const pending = state.pendingWithdrawal
+    if (state.pendingRotation || state.pendingRebase) throw new Error('HARD: 全撤与换腿不可并行')
+    for (const source of pending.plan.positions) {
+      if (pending.burns[source.bandId]?.status === 'CANONICAL_SUCCESS') continue
+      const band = state.bands.find((b) => b.id === source.bandId)
+      if (!band || band.activePosition.tokenId !== source.tokenId)
+        throw new Error('HARD: 撤仓源 NFT 与账本不匹配')
+      const key = `${pending.id}_${source.bandId}_burn`
+      const pool = await getPoolState()
+      if (!state.transactions?.[key]?.request) await readActivePosition(band, pool)
+      const burn = buildBurn(source, pool)
+      const removed = await executeKeeperTransaction({
+        state,
+        key,
+        label: `全撤 ${source.bandId} NFT ${source.tokenId}`,
+        to: POSITION_MANAGER,
+        data: burn.data,
+        metadata: { withdrawalId: pending.id, tokenId: source.tokenId },
+      })
+      await verifyBurnedPosition(removed.receipt, BigInt(source.tokenId))
+      const usdg = tokenNetFromReceipt(removed.receipt, USDG),
+        pair = tokenNetFromReceipt(removed.receipt, PAIR)
+      if (usdg < 0n || pair < 0n || usdg + pair === 0n) throw new Error('HARD: 撤仓回执净流入异常')
+      pending.burns[source.bandId] = {
+        status: 'CANONICAL_SUCCESS',
+        hash: removed.hash,
+        blockNumber: removed.receipt.blockNumber.toString(),
+        gasWei: removed.step.gasCostWei,
+        usdgAtomic: usdg.toString(),
+        pairWei: pair.toString(),
+      }
+      band.phase = 'WITHDRAWN'
+      band.activePosition.liquidity = '0'
+      state.status = 'WITHDRAWAL_PENDING'
+      store.writeState(state)
+      store.appendAudit('withdrawal_burn_complete', pending.burns[source.bandId])
+    }
+    const wallet = await walletSnapshot()
+    if (
+      wallet.nftBalance !== 0n ||
+      wallet.nonceLatest !== wallet.noncePending ||
+      wallet.nonceLatest !== state.control.expectedNextNonce
+    )
+      throw new Error('HARD: 全撤后 NFT 或 nonce 对账失败')
+    const usdgReceived = Object.values(pending.burns).reduce((sum, b) => sum + BigInt(b.usdgAtomic), 0n)
+    const pairReceived = Object.values(pending.burns).reduce((sum, b) => sum + BigInt(b.pairWei), 0n)
+    if (
+      wallet.usdgAtomic !== BigInt(pending.plan.walletBefore.usdgAtomic) + usdgReceived ||
+      wallet.pairWei !== BigInt(pending.plan.walletBefore.pairWei) + pairReceived
+    )
+      throw new Error('HARD: 全撤后代币余额与回执不一致')
+    state.lastWithdrawal = {
+      ...pending,
+      completedAt: new Date().toISOString(),
+      receivedUsdgAtomic: usdgReceived.toString(),
+      receivedPairWei: pairReceived.toString(),
+    }
+    state.history.push({ kind: 'WITHDRAW_ALL', ...state.lastWithdrawal })
+    delete state.pendingWithdrawal
+    state.status = 'WITHDRAWN'
+    state.accounting = {
+      ...state.accounting,
+      walletUsdgAtomic: wallet.usdgAtomic.toString(),
+      walletPairWei: wallet.pairWei.toString(),
+      totalGasWei: canonicalGasSpent(state).toString(),
+    }
+    state.policy.automaticSigning = false
+    store.writeState(state)
+    store.appendAudit('withdrawal_completed', state.lastWithdrawal)
+    console.log(
+      stringify({
+        status: 'WITHDRAWN',
+        wallet: WALLET,
+        nfts: '0',
+        nonce: wallet.nonceLatest,
+        withdrawal: state.lastWithdrawal,
+      }),
+    )
+  })
+}
+
 async function status() {
   await assertRuntimeIdentity()
   const blockNumber = await publicClient.getBlockNumber()
@@ -2685,6 +2854,8 @@ async function status() {
         preWriteConsensusRequired: REQUIRE_RPC_CONSENSUS,
         maximumHeadDivergence: MAXIMUM_RPC_HEAD_DIVERGENCE.toString(),
       },
+      pendingWithdrawal: state?.pendingWithdrawal || null,
+      lastWithdrawal: state?.lastWithdrawal || null,
       pendingRotation: state?.pendingRotation ? publicRotation(state.pendingRotation) : null,
       pendingRebase: state?.pendingRebase
         ? {
@@ -2851,6 +3022,9 @@ async function main() {
   if (command === 'plan' || command === 'preflight') await initialPreflight()
   else if (command === 'enter' || command === 'resume') await enter()
   else if (command === 'status') await status()
+  else if (command === 'withdraw-all-plan') await withdrawAllCommand()
+  else if (command === 'withdraw-all') await withdrawAllCommand(true)
+  else if (command === 'market-evidence') console.log(stringify(await fetchMarketEvidence()))
   else if (command === 'key-check') await keyCheck()
   else if (command === 'keeper-once') await keeperOnce()
   else if (command === 'reconcile') await reconcile()
@@ -2870,7 +3044,9 @@ main().catch((error) => {
   try {
     store.appendAudit('command_failed', { command, error: message })
     if (
-      ['keeper-once', 'reconcile', 'resume', 'rebase-floor', 'resume-rebase-floor'].includes(command) &&
+      ['keeper-once', 'reconcile', 'resume', 'rebase-floor', 'resume-rebase-floor', 'withdraw-all'].includes(
+        command,
+      ) &&
       isHardFailure(message)
     ) {
       store.halt({ command, reason: message })
