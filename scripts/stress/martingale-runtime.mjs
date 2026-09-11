@@ -404,6 +404,7 @@ export class StressRuntime {
         PAIR_MARTINGALE_MARKET_URL: 'https://offline-market.invalid',
         PAIR_MARTINGALE_RUN_DIR: this.dir,
         PAIR_MARTINGALE_LIVE_ARM: 'I_AUTHORIZE_FINITE_MARTINGALE',
+        PAIR_MARTINGALE_EXIT_CONFIRM: 'I_AUTHORIZE_WITHDRAW_ALL_FIVE',
         PAIR_MARTINGALE_REQUIRE_RPC_CONSENSUS: '1',
       },
       argv: ['node', 'offline', command],
@@ -523,7 +524,13 @@ export class StressRuntime {
     this.logs.push(result)
     assert.equal(new Set(this.mined.map((t) => t.nonce)).size, this.mined.length, 'unique mined nonces')
     assert.ok(this.eth >= 0n && this.usdg >= 0n && this.pair >= 0n, 'nonnegative wallet')
-    if (!result.pending && !result.halted && result.exitCode === 0)
+    if (
+      !result.pending &&
+      !result.halted &&
+      result.exitCode === 0 &&
+      !this.state.pendingWithdrawal &&
+      this.state.status !== 'WITHDRAWN'
+    )
       assert.equal(this.positions.size, 5, 'five live NFTs after a healthy cycle')
     return result
   }
