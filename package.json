@@ -51,7 +51,9 @@
     "martingale-budget-plan": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs budget-plan",
     "martingale-budget-apply": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs budget-apply",
     "martingale-withdraw-all-plan": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs withdraw-all-plan",
-    "martingale-withdraw-all": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs withdraw-all"
+    "martingale-withdraw-all": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs withdraw-all",
+    "martingale-liquidate-pair-plan": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs liquidate-pair-plan",
+    "martingale-liquidate-pair": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs liquidate-pair"
   },
   "dependencies": {
     "viem": "2.56.3"

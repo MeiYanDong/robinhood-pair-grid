@@ -8,6 +8,8 @@ import {
   decodeEventLog,
   defineChain,
   encodeFunctionData,
+  encodeAbiParameters,
+  parseAbiParameters,
   formatEther,
   formatUnits,
   fallback,
@@ -2497,7 +2499,11 @@ async function keeperOnce() {
   return store.withLock('martingale-keeper-once', async () => {
     store.assertNotHalted()
     const state = ensureKeeperSchema(store.readState())
-    if (state.pendingWithdrawal || state.status === 'WITHDRAWN') {
+    if (
+      state.pendingWithdrawal ||
+      state.pendingLiquidation ||
+      ['WITHDRAWN', 'LIQUIDATED'].includes(state.status)
+    ) {
       console.log(stringify({ status: 'WITHDRAWAL_PAUSED', reason: 'EXPLICIT_WITHDRAW_COMMAND_REQUIRED' }))
       return
     }
@@ -2761,6 +2767,260 @@ async function withdrawAllCommand(execute = false) {
   })
 }
 
+const LIQUIDATION_ROUTER = getAddress('0x8876789976dEcBfCbBbe364623C63652db8C0904')
+const LIQUIDATION_QUOTER = getAddress('0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94')
+const LIQUIDATION_QUOTE_ABI = parseAbi([
+  'function quoteExactInputSingle(((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 exactAmount,bytes hookData) params) returns (uint256 amountOut,uint256 gasEstimate)',
+])
+const ROUTER_EXECUTE_ABI = parseAbi([
+  'function execute(bytes commands,bytes[] inputs,uint256 deadline) payable',
+])
+const ROUTER_APPROVAL_ABI = parseAbi([
+  'function approve(address token,address spender,uint160 amount,uint48 expiration)',
+])
+
+function liquidationSwapData(amountIn, minimum, deadline) {
+  const swap = encodeAbiParameters(
+    parseAbiParameters(
+      '((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) poolKey,bool zeroForOne,uint128 amountIn,uint128 amountOutMinimum,uint256 minHopPriceX36,bytes hookData) params',
+    ),
+    [{ poolKey, zeroForOne: false, amountIn, amountOutMinimum: minimum, minHopPriceX36: 0n, hookData: '0x' }],
+  )
+  const settle = encodeAbiParameters(parseAbiParameters('address currency,uint256 amount,bool payerIsUser'), [
+    PAIR,
+    amountIn,
+    true,
+  ])
+  const take = encodeAbiParameters(parseAbiParameters('address currency,address recipient,uint256 amount'), [
+    USDG,
+    WALLET,
+    0n,
+  ])
+  const input = encodeAbiParameters(parseAbiParameters('bytes actions,bytes[] params'), [
+    '0x060b0e',
+    [swap, settle, take],
+  ])
+  return encodeFunctionData({
+    abi: ROUTER_EXECUTE_ABI,
+    functionName: 'execute',
+    args: ['0x10', [input], deadline],
+  })
+}
+
+async function quoteLiquidation(amount) {
+  const pool = await getPoolState()
+  const simulation = await publicClient.simulateContract({
+    address: LIQUIDATION_QUOTER,
+    abi: LIQUIDATION_QUOTE_ABI,
+    functionName: 'quoteExactInputSingle',
+    args: [{ poolKey, zeroForOne: false, exactAmount: amount, hookData: '0x' }],
+    account: WALLET,
+  })
+  const output = simulation.result[0]
+  const reference = (amount * (1n << 192n)) / pool.sqrtPriceX96 ** 2n
+  if (amount <= 0n || output <= 0n || output * 10000n < reference * 9700n)
+    throw new Error('WAIT: 清仓报价不足现价参考的 97%')
+  return {
+    amountInWei: amount.toString(),
+    quotedUsdgAtomic: output.toString(),
+    minimumUsdgAtomic: ((output * 9900n) / 10000n).toString(),
+    referenceUsdgAtomic: reference.toString(),
+    poolId: POOL_ID,
+    feePips: POOL_FEE,
+    slippageBps: 100,
+    quotedAt: new Date().toISOString(),
+  }
+}
+
+async function liquidationPlan(state) {
+  if (
+    state.status !== 'WITHDRAWN' ||
+    state.pendingWithdrawal ||
+    state.pendingRotation ||
+    state.pendingRebase ||
+    state.pendingLiquidation
+  )
+    throw new Error('HARD: 清仓前必须完成全部撤仓，且没有未完成操作')
+  if (Object.values(state.transactions || {}).some((t) => t.status !== 'CANONICAL_SUCCESS'))
+    throw new Error('HARD: 清仓前存在未完成交易')
+  await assertPreWriteRpcConsensus(state, 'liquidation-plan')
+  const wallet = await walletSnapshot()
+  if (
+    wallet.nftBalance !== 0n ||
+    wallet.spyWei !== 0n ||
+    wallet.nonceLatest !== wallet.noncePending ||
+    wallet.nonceLatest !== state.control.expectedNextNonce
+  )
+    throw new Error('HARD: 清仓前钱包、NFT 或 nonce 不一致')
+  if (wallet.pairWei <= 0n) throw new Error('钱包没有可清仓 PAIR')
+  const quote = await quoteLiquidation(wallet.pairWei)
+  const limits = keeperLimits(state),
+    usage = dailyUsage(state)
+  const gasPrice = await publicClient.getGasPrice()
+  const budget =
+    paddedTransactionCost(80000n, gasPrice * 2n) * 3n + paddedTransactionCost(500000n, gasPrice * 2n)
+  if (
+    wallet.ethWei < limits.minimumKeeperEthWei + budget ||
+    usage.gasWei + budget > limits.maximumDailyGasWei ||
+    usage.transactionCount + 4 > limits.maximumDailyTransactions
+  )
+    throw new Error('WAIT: 清仓完整工作流 Gas 或日额度不足')
+  return {
+    status: 'LIQUIDATION_READY',
+    wallet: WALLET,
+    quote,
+    maximumTransactions: 4,
+    gasBudgetWei: budget.toString(),
+    walletBefore: {
+      pairWei: wallet.pairWei.toString(),
+      usdgAtomic: wallet.usdgAtomic.toString(),
+      ethWei: wallet.ethWei.toString(),
+    },
+    expectedNonce: wallet.nonceLatest,
+  }
+}
+
+async function liquidatePairCommand(execute = false) {
+  await assertRuntimeIdentity()
+  return store.withLock('martingale-liquidate-pair', async () => {
+    store.assertNotHalted()
+    const state = ensureKeeperSchema(store.readState())
+    if (state.status === 'LIQUIDATED' && !state.pendingLiquidation) {
+      console.log(stringify({ status: 'LIQUIDATED', result: state.lastLiquidation }))
+      return
+    }
+    if (!execute) {
+      console.log(stringify(await liquidationPlan(state)))
+      return
+    }
+    assertLiveArm()
+    if (process.env.PAIR_MARTINGALE_LIQUIDATE_CONFIRM !== 'I_AUTHORIZE_SELL_ALL_PAIR')
+      throw new Error('缺少清空 PAIR 明确确认')
+    if (!state.pendingLiquidation) {
+      const plan = await liquidationPlan(state)
+      state.pendingLiquidation = {
+        id: `liquidate_${state.control.expectedNextNonce}`,
+        plan,
+        startedAt: new Date().toISOString(),
+      }
+      state.status = 'LIQUIDATION_PENDING'
+      store.writeState(state)
+      store.appendAudit('liquidation_planned', state.pendingLiquidation)
+    }
+    const pending = state.pendingLiquidation,
+      amount = BigInt(pending.plan.walletBefore.pairWei)
+    const swapKey = `${pending.id}_swap`
+    if (!state.transactions?.[swapKey]?.request) {
+      await ensureTokenAllowanceExact(state, PAIR, amount, `${pending.id}_pair`)
+      const approvalKey = `${pending.id}_router_approval`
+      const existing = state.transactions?.[approvalKey]
+      if (existing?.request && existing.status !== 'CANONICAL_SUCCESS') {
+        await executeKeeperTransaction({
+          state,
+          key: approvalKey,
+          label: '恢复清仓 Router 授权',
+          to: PERMIT2,
+          data: existing.request.data,
+          metadata: existing.metadata,
+        })
+      }
+      const allowance = await publicClient.readContract({
+        address: PERMIT2,
+        abi: PERMIT2_ABI,
+        functionName: 'allowance',
+        args: [WALLET, PAIR, LIQUIDATION_ROUTER],
+      })
+      if (allowance[0] !== amount || BigInt(allowance[1]) < BigInt(nowSeconds() + 300)) {
+        if (state.transactions?.[approvalKey]?.status === 'CANONICAL_SUCCESS')
+          throw new Error('HARD: 已确认清仓授权失效，需要对账')
+        const data = encodeFunctionData({
+          abi: ROUTER_APPROVAL_ABI,
+          functionName: 'approve',
+          args: [PAIR, LIQUIDATION_ROUTER, amount, Number(nowSeconds() + 3600)],
+        })
+        await executeKeeperTransaction({
+          state,
+          key: approvalKey,
+          label: '精确授权 Router 清仓 PAIR',
+          to: PERMIT2,
+          data,
+          metadata: { amount: amount.toString() },
+        })
+      }
+      const wallet = await walletSnapshot()
+      if (
+        wallet.pairWei !== amount ||
+        wallet.usdgAtomic !== BigInt(pending.plan.walletBefore.usdgAtomic) ||
+        wallet.nftBalance !== 0n
+      )
+        throw new Error('HARD: 清仓兑换前资产发生意外变化')
+      const quote = await quoteLiquidation(amount)
+      const anchored = BigInt(pending.plan.quote.minimumUsdgAtomic)
+      if (BigInt(quote.quotedUsdgAtomic) < anchored) throw new Error('WAIT: 当前报价跌破清仓开始时的滑点下限')
+      const minimum = BigInt(quote.minimumUsdgAtomic) > anchored ? BigInt(quote.minimumUsdgAtomic) : anchored
+      const data = liquidationSwapData(amount, minimum, BigInt(nowSeconds() + 300))
+      await publicClient.call({ account: WALLET, to: LIQUIDATION_ROUTER, data })
+      pending.swap = { data, minimumUsdgAtomic: minimum.toString(), quote }
+      store.writeState(state)
+    }
+    const step = state.transactions?.[swapKey]
+    const swapped = await executeKeeperTransaction({
+      state,
+      key: swapKey,
+      label: '清空全部 PAIR 换 USDG',
+      to: LIQUIDATION_ROUTER,
+      data: step?.request?.data || pending.swap.data,
+      metadata: step?.metadata || {
+        pairInputWei: amount.toString(),
+        minimumUsdgAtomic: pending.swap.minimumUsdgAtomic,
+      },
+    })
+    const pairNet = tokenNetFromReceipt(swapped.receipt, PAIR),
+      usdgNet = tokenNetFromReceipt(swapped.receipt, USDG)
+    const wallet = await walletSnapshot()
+    if (
+      pairNet !== -amount ||
+      usdgNet < BigInt(swapped.step.metadata.minimumUsdgAtomic) ||
+      wallet.pairWei !== 0n ||
+      wallet.nftBalance !== 0n ||
+      wallet.usdgAtomic !== BigInt(pending.plan.walletBefore.usdgAtomic) + usdgNet ||
+      wallet.nonceLatest !== wallet.noncePending ||
+      wallet.nonceLatest !== state.control.expectedNextNonce
+    )
+      throw new Error('HARD: 清仓后回执、余额、NFT 或 nonce 对账失败')
+    state.lastLiquidation = {
+      ...pending,
+      hash: swapped.hash,
+      blockNumber: swapped.receipt.blockNumber.toString(),
+      pairSoldWei: amount.toString(),
+      usdgReceivedAtomic: usdgNet.toString(),
+      completedAt: new Date().toISOString(),
+    }
+    state.history.push({ kind: 'LIQUIDATE_PAIR', ...state.lastLiquidation })
+    delete state.pendingLiquidation
+    state.status = 'LIQUIDATED'
+    state.policy.automaticSigning = false
+    state.accounting = {
+      ...state.accounting,
+      walletUsdgAtomic: wallet.usdgAtomic.toString(),
+      walletPairWei: '0',
+      liquidationProfitStatus: 'UNRECONCILED_HISTORICAL_BASIS',
+      totalGasWei: canonicalGasSpent(state).toString(),
+    }
+    store.writeState(state)
+    store.appendAudit('liquidation_completed', state.lastLiquidation)
+    console.log(
+      stringify({
+        status: 'LIQUIDATED',
+        pair: '0',
+        usdg: formatUnits(wallet.usdgAtomic, 6),
+        eth: formatEther(wallet.ethWei),
+        result: state.lastLiquidation,
+      }),
+    )
+  })
+}
+
 async function status() {
   await assertRuntimeIdentity()
   const blockNumber = await publicClient.getBlockNumber()
@@ -2854,6 +3114,8 @@ async function status() {
         preWriteConsensusRequired: REQUIRE_RPC_CONSENSUS,
         maximumHeadDivergence: MAXIMUM_RPC_HEAD_DIVERGENCE.toString(),
       },
+      pendingLiquidation: state?.pendingLiquidation || null,
+      lastLiquidation: state?.lastLiquidation || null,
       pendingWithdrawal: state?.pendingWithdrawal || null,
       lastWithdrawal: state?.lastWithdrawal || null,
       pendingRotation: state?.pendingRotation ? publicRotation(state.pendingRotation) : null,
@@ -3022,6 +3284,8 @@ async function main() {
   if (command === 'plan' || command === 'preflight') await initialPreflight()
   else if (command === 'enter' || command === 'resume') await enter()
   else if (command === 'status') await status()
+  else if (command === 'liquidate-pair-plan') await liquidatePairCommand()
+  else if (command === 'liquidate-pair') await liquidatePairCommand(true)
   else if (command === 'withdraw-all-plan') await withdrawAllCommand()
   else if (command === 'withdraw-all') await withdrawAllCommand(true)
   else if (command === 'market-evidence') console.log(stringify(await fetchMarketEvidence()))
@@ -3044,9 +3308,15 @@ main().catch((error) => {
   try {
     store.appendAudit('command_failed', { command, error: message })
     if (
-      ['keeper-once', 'reconcile', 'resume', 'rebase-floor', 'resume-rebase-floor', 'withdraw-all'].includes(
-        command,
-      ) &&
+      [
+        'keeper-once',
+        'reconcile',
+        'resume',
+        'rebase-floor',
+        'resume-rebase-floor',
+        'withdraw-all',
+        'liquidate-pair',
+      ].includes(command) &&
       isHardFailure(message)
     ) {
       store.halt({ command, reason: message })
