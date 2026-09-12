@@ -2,6 +2,8 @@
 Description=Deliver an external PAIR grid keeper failure alert for %i
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=21600
+StartLimitBurst=1
 
 [Service]
 Type=oneshot
