@@ -35,6 +35,8 @@
     "exit": "node --env-file-if-exists=.env.local scripts/pair-grid.mjs exit",
     "martingale-plan": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs plan",
     "martingale-preflight": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs preflight",
+    "martingale-reentry-plan": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs reentry-plan",
+    "martingale-reentry-prepare": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs reentry-prepare",
     "martingale-enter": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs enter",
     "martingale-resume": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs resume",
     "martingale-status": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs status",

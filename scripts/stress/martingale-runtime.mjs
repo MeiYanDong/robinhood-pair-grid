@@ -66,6 +66,7 @@ export class StressRuntime {
     this.fault = {}
     this.gasPrice = 225280000n
     this.marketAnchor = null
+    this.environment = options.environment || {}
     fs.writeFileSync(this.statePath, stringify(this.seed))
   }
   get statePath() {
@@ -475,6 +476,7 @@ export class StressRuntime {
         PAIR_MARTINGALE_EXIT_CONFIRM: 'I_AUTHORIZE_WITHDRAW_ALL_FIVE',
         PAIR_MARTINGALE_LIQUIDATE_CONFIRM: 'I_AUTHORIZE_SELL_ALL_PAIR',
         PAIR_MARTINGALE_REQUIRE_RPC_CONSENSUS: '1',
+        ...this.environment,
       },
       argv: ['node', 'offline', command],
       pid: process.pid,
@@ -598,7 +600,9 @@ export class StressRuntime {
       !result.halted &&
       result.exitCode === 0 &&
       !this.state.pendingWithdrawal &&
-      !['WITHDRAWN', 'LIQUIDATED'].includes(this.state.status) &&
+      !['WITHDRAWN', 'LIQUIDATED', 'INITIAL_APPROVAL_REQUIRED', 'INITIAL_MINT_REQUIRED'].includes(
+        this.state.status,
+      ) &&
       !this.state.pendingLiquidation
     )
       assert.equal(this.positions.size, 5, 'five live NFTs after a healthy cycle')

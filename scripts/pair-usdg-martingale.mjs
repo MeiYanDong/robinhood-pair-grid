@@ -505,7 +505,18 @@ async function chooseBandCount(gasPrice, ethUsdg, principal) {
   return { bandCount: 3, frictionBps: threeBps, degradedFromFive: true }
 }
 
-async function buildFreshPlan(principal, requestedBandCount = null) {
+/**
+ * @param {bigint} principal
+ * @param {3|5|null} requestedBandCount
+ * @param {Record<string, any>} policy
+ * @param {boolean} enforceFloor
+ */
+async function buildFreshPlan(
+  principal,
+  requestedBandCount = null,
+  policy = DEFAULT_FINITE_MARTINGALE_POLICY,
+  enforceFloor = true,
+) {
   const [{ evidence, ethUsdg }, poolState, gasPrice] = await Promise.all([
     fetchMarketEvidence(),
     getPoolState(),
@@ -519,16 +530,19 @@ async function buildFreshPlan(principal, requestedBandCount = null) {
     currentTick: poolState.tick,
     sqrtPriceX96: poolState.sqrtPriceX96,
     market: evidence,
-    bandCount: choice.bandCount,
+    bandCount: /** @type {3 | 5} */ (choice.bandCount),
+    policy,
   })
-  for (const band of plan.selected.bands) {
-    assertBuyRangeRespectsPriceFloor({
-      tickLower: band.tickLower,
-      tickUpper: band.tickUpper,
-      currentTick: poolState.tick,
-      minimumBuyPriceUsdg: DEFAULT_FINITE_MARTINGALE_POLICY.minimumBuyPriceUsdg,
-      tickSpacing: TICK_SPACING,
-    })
+  if (enforceFloor) {
+    for (const band of plan.selected.bands) {
+      assertBuyRangeRespectsPriceFloor({
+        tickLower: band.tickLower,
+        tickUpper: band.tickUpper,
+        currentTick: poolState.tick,
+        minimumBuyPriceUsdg: policy.minimumBuyPriceUsdg,
+        tickSpacing: TICK_SPACING,
+      })
+    }
   }
   return { plan, poolState, gasPrice, ethUsdg, choice }
 }
@@ -638,7 +652,171 @@ async function initialPreflight({ requireReady = false, print = true } = {}) {
   store.appendAudit('initial_preflight', report)
   if (print) console.log(stringify(report))
   if (requireReady && !ready) throw new Error('首次阶梯建仓预检未就绪')
-  return { report, bootstrap, principal, wallet, fresh }
+  return {
+    report,
+    bootstrap,
+    principal,
+    wallet,
+    fresh,
+    planningPolicy: DEFAULT_FINITE_MARTINGALE_POLICY,
+  }
+}
+
+async function verifyCanonicalReentryReceipt(hash) {
+  if (typeof hash !== 'string' || !/^0x[0-9a-f]{64}$/iu.test(hash)) {
+    throw new Error('HARD: 上一轮清仓回执哈希无效')
+  }
+  const [receipt, transaction] = await Promise.all([
+    publicClient.getTransactionReceipt({ hash }),
+    publicClient.getTransaction({ hash }),
+  ])
+  if (receipt.status !== 'success' || transaction.from.toLowerCase() !== WALLET.toLowerCase()) {
+    throw new Error('HARD: 上一轮清仓交易身份或回执失败')
+  }
+  const canonical = await publicClient.getBlock({ blockNumber: receipt.blockNumber })
+  if (canonical.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+    throw new Error('HARD: 上一轮清仓回执不再 canonical')
+  }
+  return receipt
+}
+
+async function assertLiquidatedReentrySource(state, wallet) {
+  if (!state || state.strategyId !== 'pair-usdg-finite-martingale-live-1') {
+    throw new Error('HARD: 重启来源账本身份不匹配')
+  }
+  if (state.status !== 'LIQUIDATED') throw new Error('HARD: 只有已清仓终态可以建立新一轮')
+  if (
+    state.pending ||
+    state.pendingRotation ||
+    state.pendingRebase ||
+    state.pendingWithdrawal ||
+    state.pendingLiquidation
+  ) {
+    throw new Error('HARD: 上一轮仍有未完成操作')
+  }
+  if (!state.lastLiquidation?.hash || !state.lastLiquidation?.blockNumber) {
+    throw new Error('HARD: 上一轮缺少清仓回执证据')
+  }
+  if (
+    wallet.usdgAtomic <= 0n ||
+    wallet.pairWei !== 0n ||
+    wallet.spyWei !== 0n ||
+    wallet.nftBalance !== 0n ||
+    wallet.nonceLatest !== wallet.noncePending ||
+    wallet.nonceLatest !== Number(state.control?.expectedNextNonce)
+  ) {
+    throw new Error('HARD: 重启前钱包资产、NFT 或 nonce 与清仓账本不一致')
+  }
+  if (BigInt(state.accounting?.walletUsdgAtomic || -1) !== wallet.usdgAtomic) {
+    throw new Error('HARD: 当前 USDG 余额与清仓后账本不一致')
+  }
+  await verifyCanonicalReentryReceipt(state.lastLiquidation.hash)
+}
+
+async function verifyReentryPrincipal(state) {
+  const source = state.sourceReentry
+  const principal = BigInt(state.principal?.initialUsdgAtomic || 0)
+  const wallet = await walletSnapshot()
+  if (
+    source?.kind !== 'CANONICAL_LIQUIDATED_WALLET_REENTRY' ||
+    typeof source.liquidationTransaction !== 'string' ||
+    principal <= 0n ||
+    wallet.usdgAtomic !== principal ||
+    wallet.pairWei !== 0n ||
+    wallet.spyWei !== 0n ||
+    wallet.nftBalance !== 0n ||
+    wallet.nonceLatest !== wallet.noncePending ||
+    wallet.nonceLatest !== Number(state.control?.expectedNextNonce)
+  ) {
+    throw new Error('HARD: 新一轮首次建仓前本金、资产或 nonce 偏离')
+  }
+  await verifyCanonicalReentryReceipt(source.liquidationTransaction)
+  return principal
+}
+
+async function reentryPreflight({ apply = false } = {}) {
+  await assertRuntimeIdentity()
+  return store.withLock(apply ? 'martingale-reentry-prepare' : 'martingale-reentry-plan', async () => {
+    store.assertNotHalted()
+    const previous = store.readState()
+    const wallet = await walletSnapshot()
+    await assertLiquidatedReentrySource(previous, wallet)
+    const unconstrainedPolicy = {
+      ...DEFAULT_FINITE_MARTINGALE_POLICY,
+      deployBps: 10_000,
+      reserveBps: 0,
+      minimumBuyPriceUsdg: Number.MIN_VALUE,
+    }
+    const fresh = await buildFreshPlan(wallet.usdgAtomic, 5, unconstrainedPolicy, false)
+    const lowestBand = fresh.plan.selected.bands.at(-1)
+    if (!lowestBand) throw new Error('HARD: 新一轮没有可用买入档位')
+    const planningPolicy = {
+      ...unconstrainedPolicy,
+      minimumBuyPriceUsdg: directPairPriceAtTick(lowestBand.tickUpper),
+    }
+    for (const band of fresh.plan.selected.bands) {
+      assertBuyRangeRespectsPriceFloor({
+        tickLower: band.tickLower,
+        tickUpper: band.tickUpper,
+        currentTick: fresh.poolState.tick,
+        minimumBuyPriceUsdg: planningPolicy.minimumBuyPriceUsdg,
+        tickSpacing: TICK_SPACING,
+      })
+    }
+    const sourceReentry = {
+      kind: 'CANONICAL_LIQUIDATED_WALLET_REENTRY',
+      sameWallet: true,
+      previousCreatedAt: previous.createdAt,
+      previousLiquidatedAt: previous.lastLiquidation.completedAt,
+      liquidationTransaction: previous.lastLiquidation.hash,
+      liquidationBlockNumber: previous.lastLiquidation.blockNumber,
+      previousInitialUsdgAtomic: previous.principal.initialUsdgAtomic,
+      reentryUsdgAtomic: wallet.usdgAtomic.toString(),
+      expectedNonce: wallet.nonceLatest,
+    }
+    const report = {
+      status: apply ? 'REENTRY_PREPARED' : 'READY_FOR_REENTRY_PREPARATION',
+      evidenceClass: 'CANONICAL_LIQUIDATION_RECEIPT_PLUS_LIVE_EMPTY_WALLET_AND_UNSIGNED_PLAN',
+      wallet: WALLET,
+      sameWallet: true,
+      principalUsdg: formatUnits(wallet.usdgAtomic, 6),
+      pair: '0',
+      nfts: '0',
+      nonce: wallet.nonceLatest,
+      dynamicBuyFloorUsdg: planningPolicy.minimumBuyPriceUsdg,
+      plan: publicPlan(fresh.plan),
+      sourceReentry,
+    }
+    if (!apply) {
+      console.log(stringify(report))
+      return report
+    }
+    if (process.env.PAIR_MARTINGALE_REENTRY_CONFIRM !== 'I_AUTHORIZE_REENTRY_SAME_WALLET') {
+      throw new Error('准备同钱包新一轮需要明确重启确认')
+    }
+    const archivePath = path.join(
+      store.runDirectory,
+      `pair-grid.liquidated-${previous.lastLiquidation.blockNumber}.json`,
+    )
+    if (fs.existsSync(archivePath)) throw new Error(`HARD: 清仓账本归档已存在：${archivePath}`)
+    fs.copyFileSync(store.statePath, archivePath, fs.constants.COPYFILE_EXCL)
+    fs.chmodSync(archivePath, 0o600)
+    const next = /** @type {any} */ (
+      newState({
+        principal: wallet.usdgAtomic,
+        wallet,
+        fresh,
+        planningPolicy,
+        bootstrap: null,
+        sourceReentry,
+      })
+    )
+    next.previousEpochArchivePath = archivePath
+    store.writeState(next)
+    store.appendAudit('reentry_prepared', { ...report, previousEpochArchivePath: archivePath })
+    console.log(stringify({ ...report, previousEpochArchivePath: archivePath }))
+    return report
+  })
 }
 
 function serializablePlan(plan) {
@@ -654,8 +832,9 @@ function newState(check) {
     wallet: WALLET,
     chainId: CHAIN_ID,
     pool: { poolId: POOL_ID, ...poolKey },
-    sourceBootstrapPath: BOOTSTRAP_PATH,
-    sourceNormalizationOperationId: check.bootstrap.normalization.operationId,
+    sourceBootstrapPath: check.bootstrap ? BOOTSTRAP_PATH : null,
+    sourceNormalizationOperationId: check.bootstrap?.normalization?.operationId || null,
+    ...(check.sourceReentry ? { sourceReentry: check.sourceReentry } : {}),
     principal: {
       initialUsdgAtomic: check.principal.toString(),
       gasExcluded: true,
@@ -663,14 +842,15 @@ function newState(check) {
       reinvestmentEnabled: false,
     },
     policy: {
-      deployBps: 9_000,
-      reserveBps: 1_000,
+      deployBps: check.planningPolicy.deployBps,
+      reserveBps: check.planningPolicy.reserveBps,
       weightsBps: check.fresh.plan.selected.bands.map((band) => band.weightBps),
       maximumBuildFrictionBps: MAXIMUM_BUILD_FRICTION_BPS,
       minimumFinalEthWei: MINIMUM_FINAL_ETH_WEI.toString(),
       maximumInitialGasWei: MAXIMUM_INITIAL_GAS_WEI.toString(),
       minimumConversionBps: DEFAULT_FINITE_MARTINGALE_POLICY.minimumConversionBps,
       minimumNetProfitBps: DEFAULT_FINITE_MARTINGALE_POLICY.minimumNetProfitBps,
+      minimumBuyPriceUsdg: check.planningPolicy.minimumBuyPriceUsdg,
       noLeverage: true,
       oneBandPerKeeperCycle: true,
     },
@@ -1281,8 +1461,14 @@ async function updateBootstrapCurrentPositions(state, migration) {
 
 async function resumeInitial(state) {
   await assertRuntimeIdentity()
-  const { bootstrap, principal } = readBootstrap()
-  await verifyNormalizationReceipts(bootstrap)
+  let principal
+  if (state.sourceReentry) {
+    principal = await verifyReentryPrincipal(state)
+  } else {
+    const source = readBootstrap()
+    await verifyNormalizationReceipts(source.bootstrap)
+    principal = source.principal
+  }
   const account = loadAccount()
   const walletClient = createWalletClient({
     account,
@@ -1352,7 +1538,13 @@ async function resumeInitial(state) {
     if (persistedBandCount !== 3 && persistedBandCount !== 5) {
       throw new Error(`持久化档位数无效：${persistedBandCount}`)
     }
-    const fresh = await buildFreshPlan(principal, persistedBandCount)
+    const planningPolicy = {
+      ...DEFAULT_FINITE_MARTINGALE_POLICY,
+      deployBps: Number(state.policy.deployBps),
+      reserveBps: Number(state.policy.reserveBps),
+      minimumBuyPriceUsdg: Number(state.policy.minimumBuyPriceUsdg),
+    }
+    const fresh = await buildFreshPlan(principal, persistedBandCount, planningPolicy)
     state.plan = serializablePlan(fresh.plan)
     state.policy.weightsBps = fresh.plan.selected.bands.map((band) => band.weightBps)
     state.status = 'INITIAL_MINT_REQUIRED'
@@ -1367,7 +1559,7 @@ async function resumeInitial(state) {
     const actualFrictionBps = modeledGasFrictionBps(totalGasUnits, fresh.gasPrice, fresh.ethUsdg, principal)
     if (actualFrictionBps > MAXIMUM_BUILD_FRICTION_BPS) {
       if (fresh.plan.bandCount === 5) {
-        const degraded = await buildFreshPlan(principal, 3)
+        const degraded = await buildFreshPlan(principal, 3, planningPolicy)
         state.plan = serializablePlan(degraded.plan)
         state.policy.weightsBps = degraded.plan.selected.bands.map((band) => band.weightBps)
         store.writeState(state)
@@ -1467,7 +1659,7 @@ async function resumeInitial(state) {
       spentUsdgAtomic: spent,
       reserveUsdgAtomic: walletAfter.usdgAtomic,
     })
-    await updateBootstrapWithPositions(state, mint)
+    if (!state.sourceReentry) await updateBootstrapWithPositions(state, mint)
   }
   console.log(
     stringify({
@@ -1531,12 +1723,21 @@ function modeledRotationGasUsdg(gasPrice, ethUsdg) {
 function freshBuyTarget(state, band, market, poolState) {
   const bandCount = Number(state.plan.bandCount)
   if (bandCount !== 3 && bandCount !== 5) throw new Error(`HARD: 档位数 ${bandCount} 无效`)
+  const planningPolicy = {
+    ...DEFAULT_FINITE_MARTINGALE_POLICY,
+    deployBps: Number(state.policy.deployBps ?? DEFAULT_FINITE_MARTINGALE_POLICY.deployBps),
+    reserveBps: Number(state.policy.reserveBps ?? DEFAULT_FINITE_MARTINGALE_POLICY.reserveBps),
+    minimumBuyPriceUsdg: Number(
+      state.policy.minimumBuyPriceUsdg ?? DEFAULT_FINITE_MARTINGALE_POLICY.minimumBuyPriceUsdg,
+    ),
+  }
   const fresh = planInitialBuyLadder({
     principalUsdgAtomic: BigInt(state.principal.initialUsdgAtomic),
     currentTick: poolState.tick,
     sqrtPriceX96: poolState.sqrtPriceX96,
     market: market.evidence,
     bandCount,
+    policy: planningPolicy,
   })
   const target = fresh.selected.bands.find((candidate) => candidate.index === band.index)
   if (!target) throw new Error(`无法为 ${band.id} 生成动态 BUY 区间`)
@@ -3282,6 +3483,8 @@ async function rpcConsensusCheck() {
 async function main() {
   const command = process.argv[2] || 'preflight'
   if (command === 'plan' || command === 'preflight') await initialPreflight()
+  else if (command === 'reentry-plan') await reentryPreflight()
+  else if (command === 'reentry-prepare') await reentryPreflight({ apply: true })
   else if (command === 'enter' || command === 'resume') await enter()
   else if (command === 'status') await status()
   else if (command === 'liquidate-pair-plan') await liquidatePairCommand()
