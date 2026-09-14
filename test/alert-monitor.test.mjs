@@ -179,16 +179,25 @@ test('changed HALTED evidence creates a new alert before the repeat interval', (
   assert.equal(changed.alerts.length, 1)
 })
 
-test('stale keeper heartbeat alerts immediately, deduplicates and clears after recovery', () => {
-  const first = planMonitorRun({
-    previous: {},
-    readback: { ok: true },
-    heartbeat: { ok: false, ageSeconds: 180, error: 'stale' },
-    strategyLabel: 'PAIR/USDG 有限马丁',
-    now: START,
-  })
+test('stale keeper heartbeat waits for consecutive failures, deduplicates and clears after recovery', () => {
+  let previous = {}
+  let first
+  for (let failure = 1; failure <= 3; failure += 1) {
+    first = planMonitorRun({
+      previous,
+      readback: { ok: true },
+      heartbeat: { ok: false, ageSeconds: 180, error: 'stale' },
+      heartbeatFailureThreshold: 3,
+      strategyLabel: 'PAIR/USDG 有限马丁',
+      now: new Date(START.getTime() + failure * 60_000),
+    })
+    assert.equal(first.state.consecutiveHeartbeatFailures, failure)
+    assert.equal(first.alerts.length, failure === 3 ? 1 : 0)
+    previous = first.state
+  }
   assert.equal(first.alerts[0].kind, 'stale-keeper-heartbeat')
   assert.match(first.alerts[0].summary, /PAIR\/USDG 有限马丁/u)
+  assert.match(first.alerts[0].details, /连续失败 3 次/u)
   const delivered = markMonitorDelivery(first.state, first.alerts[0], START.toISOString())
   const duplicate = planMonitorRun({
     previous: delivered,
@@ -203,11 +212,16 @@ test('stale keeper heartbeat alerts immediately, deduplicates and clears after r
     heartbeat: { ok: true, ageSeconds: 10 },
     now: START,
   })
+  assert.equal(recovered.state.consecutiveHeartbeatFailures, 0)
   assert.equal(recovered.state.heartbeatDelivery, null)
 })
 
 test('invalid monitor limits and unknown delivery kinds fail closed', () => {
   assert.throws(() => planMonitorRun({ readback: { ok: false }, failureThreshold: 0 }), /失败阈值/u)
+  assert.throws(
+    () => planMonitorRun({ readback: { ok: true }, heartbeatFailureThreshold: 0 }),
+    /heartbeat 失败阈值/u,
+  )
   assert.throws(() => planMonitorRun({ readback: { ok: false }, repeatMinutes: 1 }), /重复间隔/u)
   // @ts-expect-error Runtime validation must reject malformed monitor input.
   assert.throws(() => planMonitorRun({ readback: { ok: true }, heartbeat: {} }), /heartbeat/u)

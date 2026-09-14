@@ -25,3 +25,7 @@ test('release installer deploys both isolated monitor units', () => {
 test('release installer deploys the resumable hard-floor rebase unit', () => {
   assert.match(installer, /robinhood-pair-usdg-martingale-rebase-floor\.service/u)
 })
+
+test('release installer deploys the initial martingale resume unit', () => {
+  assert.match(installer, /robinhood-pair-usdg-martingale-resume\.service/u)
+})

@@ -27,6 +27,12 @@ test('alert units load only the dedicated alert credential', () => {
   }
 })
 
+test('direct service failure alerts are rate limited independently of the monitor', () => {
+  const alert = unit('robinhood-pair-grid-alert@.service')
+  assert.match(alert, /^StartLimitIntervalSec=604800$/mu)
+  assert.match(alert, /^StartLimitBurst=1$/mu)
+})
+
 test('monitor is read-only, durable and scheduled independently of trading', () => {
   const monitor = unit('robinhood-pair-grid-monitor.service')
   const timer = unit('robinhood-pair-grid-monitor.timer')
@@ -47,7 +53,7 @@ test('isolated martingale keeper has its own credential, state path and 30 secon
   const keyCheck = unit('robinhood-pair-usdg-martingale-key-check.service')
   const status = unit('robinhood-pair-usdg-martingale-status.service')
 
-  assert.match(keeper, /^OnFailure=robinhood-pair-grid-alert@%n\.service$/mu)
+  assert.doesNotMatch(keeper, /^OnFailure=/mu)
   assert.match(
     keeper,
     /^LoadCredentialEncrypted=pair-usdg-martingale-private-key:\/etc\/credstore\.encrypted\/pair-usdg-martingale-private-key$/mu,
@@ -63,6 +69,7 @@ test('isolated martingale keeper has its own credential, state path and 30 secon
   )
   assert.doesNotMatch(keeper, /pair-grid-private-key/u)
   assert.match(timer, /^OnUnitActiveSec=30s$/mu)
+  assert.match(timer, /^OnActiveSec=30s$/mu)
   assert.match(timer, /^AccuracySec=1s$/mu)
   assert.match(timer, /^Persistent=true$/mu)
   assert.match(timer, /^Unit=robinhood-pair-usdg-martingale\.service$/mu)
@@ -91,6 +98,17 @@ test('hard-floor rebase is an isolated manual-only resumable operation', () => {
   assert.doesNotMatch(rebase, /pair-grid-private-key/u)
 })
 
+test('initial martingale resume is an isolated manual-only signing operation', () => {
+  const resume = unit('robinhood-pair-usdg-martingale-resume.service')
+  assert.match(resume, /^Conflicts=robinhood-pair-usdg-martingale\.service$/mu)
+  assert.match(
+    resume,
+    /^LoadCredentialEncrypted=pair-usdg-martingale-private-key:\/etc\/credstore\.encrypted\/pair-usdg-martingale-private-key$/mu,
+  )
+  assert.match(resume, /^ExecStart=\/usr\/local\/bin\/npm run martingale-resume$/mu)
+  assert.doesNotMatch(resume, /^\[Install\]$/mu)
+})
+
 test('isolated martingale monitor validates status and successful keeper heartbeat every minute', () => {
   const monitor = unit('robinhood-pair-usdg-martingale-monitor.service')
   const timer = unit('robinhood-pair-usdg-martingale-monitor.timer')
@@ -101,6 +119,8 @@ test('isolated martingale monitor validates status and successful keeper heartbe
     /^Environment=PAIR_GRID_RUN_DIR=\/var\/lib\/robinhood-pair-grid\/usdg-martingale-live-1$/mu,
   )
   assert.match(monitor, /^Environment=PAIR_GRID_ALERT_HEARTBEAT_MAX_AGE_SECONDS=120$/mu)
+  assert.match(monitor, /^Environment=PAIR_GRID_ALERT_HEARTBEAT_FAILURES=3$/mu)
+  assert.match(monitor, /^Environment=PAIR_GRID_ALERT_REPEAT_MINUTES=10080$/mu)
   assert.match(monitor, /scripts\/pair-grid-alert\.mjs monitor-once/u)
   assert.match(monitor, /^OnFailure=robinhood-pair-grid-alert@%n\.service$/mu)
   assert.doesNotMatch(monitor, /pair-usdg-martingale-private-key/u)

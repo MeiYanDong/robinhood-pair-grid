@@ -3,7 +3,6 @@ Description=Robinhood PAIR/USDG finite martingale LP keeper
 Documentation=https://github.com/MeiYanDong/robinhood-pair-grid
 Wants=network-online.target
 After=network-online.target
-OnFailure=robinhood-pair-grid-alert@%n.service
 
 [Service]
 Type=oneshot

@@ -16,6 +16,7 @@ Environment=PAIR_MARTINGALE_RUN_DIR=/var/lib/robinhood-pair-grid/usdg-martingale
 Environment=PAIR_MARTINGALE_BOOTSTRAP_PATH=/var/lib/robinhood-pair-grid/pair-usdg-martingale-bootstrap.json
 Environment=PAIR_GRID_KEEPER_HEARTBEAT_PATH=/var/lib/robinhood-pair-grid/usdg-martingale-live-1/keeper-success.heartbeat
 Environment=PAIR_GRID_ALERT_HEARTBEAT_MAX_AGE_SECONDS=120
+Environment=PAIR_GRID_ALERT_HEARTBEAT_FAILURES=3
 Environment=PAIR_GRID_ALERT_REPEAT_MINUTES=10080
 EnvironmentFile=/etc/robinhood-pair-grid/runtime.env
 LoadCredentialEncrypted=pair-grid-alert:/etc/credstore.encrypted/pair-grid-alert

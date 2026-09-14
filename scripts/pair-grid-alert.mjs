@@ -135,6 +135,7 @@ async function monitorOnce() {
     heartbeat,
     strategyLabel: monitorMode === 'martingale' ? 'PAIR/USDG 有限马丁' : 'PAIR 网格',
     failureThreshold: parseBoundedInteger('PAIR_GRID_ALERT_READBACK_FAILURES', 3, 1, 100),
+    heartbeatFailureThreshold: parseBoundedInteger('PAIR_GRID_ALERT_HEARTBEAT_FAILURES', 3, 1, 100),
     repeatMinutes: parseBoundedInteger('PAIR_GRID_ALERT_REPEAT_MINUTES', 360, 5, 10_080),
   })
   let state = plan.state
@@ -161,6 +162,7 @@ async function monitorOnce() {
       heartbeatOk: heartbeat.ok,
       heartbeatAgeSeconds: heartbeat.ageSeconds ?? null,
       consecutiveReadbackFailures: state.consecutiveReadbackFailures,
+      consecutiveHeartbeatFailures: state.consecutiveHeartbeatFailures,
       alertsAcknowledged: plan.alerts.length,
     }),
   )
