@@ -27,6 +27,7 @@ import {
 } from '../lib/rotation-budget.mjs'
 
 import { reconcileInternalTransfer } from '../lib/internal-transfer-recovery.mjs'
+import { auditWithdrawnWalletRestart } from '../lib/withdrawn-restart-audit.mjs'
 
 import { loadSignerAccount } from '../lib/account-loader.mjs'
 import {
@@ -67,6 +68,9 @@ const KEYCHAIN_SERVICE = process.env.PAIR_MARTINGALE_KEYCHAIN_SERVICE || 'codex-
 const MARKET_URL = process.env.PAIR_MARTINGALE_MARKET_URL || ''
 const BOOTSTRAP_PATH = path.resolve(process.env.PAIR_MARTINGALE_BOOTSTRAP_PATH || './runs/bootstrap.json')
 const RUN_DIR = path.resolve(process.env.PAIR_MARTINGALE_RUN_DIR || './runs/usdg-martingale')
+const RESTART_AUDIT_PATH = path.resolve(
+  process.env.PAIR_MARTINGALE_RESTART_AUDIT_PATH || path.join(RUN_DIR, 'withdrawn-restart-audit.json'),
+)
 
 const USDG = getAddress('0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168')
 const SPY = getAddress('0x117cc2133c37B721F49dE2A7a74833232B3B4C0C')
@@ -80,7 +84,7 @@ const POOL_FEE = DEFAULT_FINITE_MARTINGALE_POLICY.feePips
 const CONFIRMATION_DEPTH = 128n
 const REQUIRE_RPC_CONSENSUS = process.env.PAIR_MARTINGALE_REQUIRE_RPC_CONSENSUS === '1'
 const MAXIMUM_RPC_HEAD_DIVERGENCE = BigInt(process.env.PAIR_MARTINGALE_MAXIMUM_RPC_HEAD_DIVERGENCE || '128')
-const MINIMUM_FINAL_ETH_WEI = 3_500_000_000_000_000n
+const MINIMUM_FINAL_ETH_WEI = 1_000_000_000_000_000n
 const MAXIMUM_INITIAL_GAS_WEI = 1_000_000_000_000_000n
 const CONSERVATIVE_APPROVAL_GAS = 80_000n
 const CONSERVATIVE_FIVE_MINT_GAS = 1_500_000n
@@ -718,8 +722,6 @@ async function verifyReentryPrincipal(state) {
   const principal = BigInt(state.principal?.initialUsdgAtomic || 0)
   const wallet = await walletSnapshot()
   if (
-    source?.kind !== 'CANONICAL_LIQUIDATED_WALLET_REENTRY' ||
-    typeof source.liquidationTransaction !== 'string' ||
     principal <= 0n ||
     wallet.usdgAtomic !== principal ||
     wallet.pairWei !== 0n ||
@@ -730,8 +732,53 @@ async function verifyReentryPrincipal(state) {
   ) {
     throw new Error('HARD: 新一轮首次建仓前本金、资产或 nonce 偏离')
   }
-  await verifyCanonicalReentryReceipt(source.liquidationTransaction)
+  if (source?.kind === 'CANONICAL_LIQUIDATED_WALLET_REENTRY') {
+    await verifyCanonicalReentryReceipt(source.liquidationTransaction)
+  } else if (source?.kind === 'CANONICAL_AUDITED_WITHDRAWN_WALLET_RESTART') {
+    const archive = JSON.parse(fs.readFileSync(state.previousEpochArchivePath, 'utf8'))
+    const priorWallet = await walletSnapshot(BigInt(source.finalWithdrawalBlockNumber))
+    const verified = await auditWithdrawnWalletRestart({
+      previous: archive,
+      wallet: { ...wallet, nonceLatest: source.expectedNonce, noncePending: source.expectedNonce },
+      priorWallet,
+      hashes: source.externalTransactions.map((transaction) => transaction.hash),
+      client: publicClient,
+      walletAddress: WALLET,
+      usdgAddress: USDG,
+      pairAddress: PAIR,
+    })
+    if (stringify(verified) !== stringify(source)) {
+      throw new Error('HARD: 重启后外部交易审计与持久化来源不一致')
+    }
+  } else {
+    throw new Error('HARD: 新一轮资金来源类型无效')
+  }
   return principal
+}
+
+async function buildFullRangeFreshPlan(principal, floorUsdg) {
+  const unconstrainedPolicy = {
+    ...DEFAULT_FINITE_MARTINGALE_POLICY,
+    deployBps: 10_000,
+    reserveBps: 0,
+    minimumBuyPriceUsdg: Number.MIN_VALUE,
+  }
+  const fresh = await buildFreshPlan(principal, 5, unconstrainedPolicy, false)
+  return {
+    ...fresh,
+    plan: {
+      ...planAdaptiveHardFloorBuyLadder({
+        bands: fresh.plan.selected.bands,
+        currentTick: fresh.poolState.tick,
+        sqrtPriceX96: fresh.poolState.sqrtPriceX96,
+        minimumBuyPriceUsdg: floorUsdg,
+        minimumBandWidthTicks: HARD_FLOOR_REBASE_MINIMUM_BAND_WIDTH_TICKS,
+      }),
+      evidence: fresh.plan.evidence,
+      hotBand6hUsdg: fresh.plan.hotBand6hUsdg,
+      observedVolumeAcceleration: fresh.plan.observedVolumeAcceleration,
+    },
+  }
 }
 
 async function reentryPreflight({ apply = false } = {}) {
@@ -740,19 +787,63 @@ async function reentryPreflight({ apply = false } = {}) {
     store.assertNotHalted()
     const previous = store.readState()
     const wallet = await walletSnapshot()
-    await assertLiquidatedReentrySource(previous, wallet)
-    const unconstrainedPolicy = {
-      ...DEFAULT_FINITE_MARTINGALE_POLICY,
-      deployBps: 10_000,
-      reserveBps: 0,
-      minimumBuyPriceUsdg: Number.MIN_VALUE,
-    }
-    const fresh = await buildFreshPlan(wallet.usdgAtomic, 5, unconstrainedPolicy, false)
-    const lowestBand = fresh.plan.selected.bands.at(-1)
-    if (!lowestBand) throw new Error('HARD: 新一轮没有可用买入档位')
-    const planningPolicy = {
-      ...unconstrainedPolicy,
-      minimumBuyPriceUsdg: directPairPriceAtTick(lowestBand.tickUpper),
+    let sourceReentry
+    let fresh
+    let planningPolicy
+    if (previous?.status === 'WITHDRAWN') {
+      const auditInput = JSON.parse(fs.readFileSync(RESTART_AUDIT_PATH, 'utf8'))
+      if (
+        auditInput.strategyId !== previous.strategyId ||
+        auditInput.wallet?.toLowerCase() !== WALLET.toLowerCase() ||
+        Number(auditInput.minimumBuyPriceUsdg) !== 0.004
+      ) {
+        throw new Error('HARD: 全撤后重启审计身份或 0.004 下限不匹配')
+      }
+      const finalBlock = BigInt(previous.lastWithdrawal?.burns?.B5?.blockNumber || 0)
+      const priorWallet = await walletSnapshot(finalBlock)
+      sourceReentry = await auditWithdrawnWalletRestart({
+        previous,
+        wallet,
+        priorWallet,
+        hashes: auditInput.transactionHashes,
+        client: publicClient,
+        walletAddress: WALLET,
+        usdgAddress: USDG,
+        pairAddress: PAIR,
+      })
+      planningPolicy = {
+        ...DEFAULT_FINITE_MARTINGALE_POLICY,
+        deployBps: 10_000,
+        reserveBps: 0,
+        minimumBuyPriceUsdg: 0.004,
+      }
+      fresh = await buildFullRangeFreshPlan(wallet.usdgAtomic, planningPolicy.minimumBuyPriceUsdg)
+    } else {
+      await assertLiquidatedReentrySource(previous, wallet)
+      const unconstrainedPolicy = {
+        ...DEFAULT_FINITE_MARTINGALE_POLICY,
+        deployBps: 10_000,
+        reserveBps: 0,
+        minimumBuyPriceUsdg: Number.MIN_VALUE,
+      }
+      fresh = await buildFreshPlan(wallet.usdgAtomic, 5, unconstrainedPolicy, false)
+      const lowestBand = fresh.plan.selected.bands.at(-1)
+      if (!lowestBand) throw new Error('HARD: 新一轮没有可用买入档位')
+      planningPolicy = {
+        ...unconstrainedPolicy,
+        minimumBuyPriceUsdg: directPairPriceAtTick(lowestBand.tickUpper),
+      }
+      sourceReentry = {
+        kind: 'CANONICAL_LIQUIDATED_WALLET_REENTRY',
+        sameWallet: true,
+        previousCreatedAt: previous.createdAt,
+        previousLiquidatedAt: previous.lastLiquidation.completedAt,
+        liquidationTransaction: previous.lastLiquidation.hash,
+        liquidationBlockNumber: previous.lastLiquidation.blockNumber,
+        previousInitialUsdgAtomic: previous.principal.initialUsdgAtomic,
+        reentryUsdgAtomic: wallet.usdgAtomic.toString(),
+        expectedNonce: wallet.nonceLatest,
+      }
     }
     for (const band of fresh.plan.selected.bands) {
       assertBuyRangeRespectsPriceFloor({
@@ -763,26 +854,38 @@ async function reentryPreflight({ apply = false } = {}) {
         tickSpacing: TICK_SPACING,
       })
     }
-    const sourceReentry = {
-      kind: 'CANONICAL_LIQUIDATED_WALLET_REENTRY',
-      sameWallet: true,
-      previousCreatedAt: previous.createdAt,
-      previousLiquidatedAt: previous.lastLiquidation.completedAt,
-      liquidationTransaction: previous.lastLiquidation.hash,
-      liquidationBlockNumber: previous.lastLiquidation.blockNumber,
-      previousInitialUsdgAtomic: previous.principal.initialUsdgAtomic,
-      reentryUsdgAtomic: wallet.usdgAtomic.toString(),
-      expectedNonce: wallet.nonceLatest,
+    const allowance = await publicClient.readContract({
+      address: USDG,
+      abi: ERC20_ABI,
+      functionName: 'allowance',
+      args: [WALLET, PERMIT2],
+    })
+    if (allowance !== 0n && allowance !== fresh.plan.deployableUsdgAtomic) {
+      throw new Error('HARD: 重启前 USDG→Permit2 存在不匹配的旧授权')
     }
+    const modeledGasWei =
+      ((CONSERVATIVE_APPROVAL_GAS + CONSERVATIVE_FIVE_MINT_GAS) * fresh.gasPrice * 13_750n) / 10_000n
+    const readyForEntry =
+      wallet.ethWei >= modeledGasWei + MINIMUM_FINAL_ETH_WEI && modeledGasWei <= MAXIMUM_INITIAL_GAS_WEI
     const report = {
-      status: apply ? 'REENTRY_PREPARED' : 'READY_FOR_REENTRY_PREPARATION',
-      evidenceClass: 'CANONICAL_LIQUIDATION_RECEIPT_PLUS_LIVE_EMPTY_WALLET_AND_UNSIGNED_PLAN',
+      status: apply ? 'REENTRY_PREPARED' : readyForEntry ? 'READY_FOR_REENTRY_PREPARATION' : 'WAITING_GAS',
+      evidenceClass:
+        previous.status === 'WITHDRAWN'
+          ? 'CANONICAL_WITHDRAWAL_AND_EXTERNAL_WALLET_RECEIPTS_PLUS_LIVE_EMPTY_WALLET_AND_UNSIGNED_PLAN'
+          : 'CANONICAL_LIQUIDATION_RECEIPT_PLUS_LIVE_EMPTY_WALLET_AND_UNSIGNED_PLAN',
       wallet: WALLET,
       sameWallet: true,
       principalUsdg: formatUnits(wallet.usdgAtomic, 6),
       pair: '0',
       nfts: '0',
       nonce: wallet.nonceLatest,
+      gas: {
+        walletEth: formatEther(wallet.ethWei),
+        gasPriceGwei: formatUnits(fresh.gasPrice, 9),
+        modeledMaximumEth: formatEther(modeledGasWei),
+        minimumFinalEth: formatEther(MINIMUM_FINAL_ETH_WEI),
+        readyForEntry,
+      },
       dynamicBuyFloorUsdg: planningPolicy.minimumBuyPriceUsdg,
       plan: publicPlan(fresh.plan),
       sourceReentry,
@@ -791,12 +894,15 @@ async function reentryPreflight({ apply = false } = {}) {
       console.log(stringify(report))
       return report
     }
+    if (!readyForEntry) throw new Error('WAIT: 重启建仓 Gas 储备不足')
     if (process.env.PAIR_MARTINGALE_REENTRY_CONFIRM !== 'I_AUTHORIZE_REENTRY_SAME_WALLET') {
       throw new Error('准备同钱包新一轮需要明确重启确认')
     }
     const archivePath = path.join(
       store.runDirectory,
-      `pair-grid.liquidated-${previous.lastLiquidation.blockNumber}.json`,
+      previous.status === 'WITHDRAWN'
+        ? `pair-grid.withdrawn-${previous.lastWithdrawal.burns.B5.blockNumber}.json`
+        : `pair-grid.liquidated-${previous.lastLiquidation.blockNumber}.json`,
     )
     if (fs.existsSync(archivePath)) throw new Error(`HARD: 清仓账本归档已存在：${archivePath}`)
     fs.copyFileSync(store.statePath, archivePath, fs.constants.COPYFILE_EXCL)
@@ -1544,7 +1650,10 @@ async function resumeInitial(state) {
       reserveBps: Number(state.policy.reserveBps),
       minimumBuyPriceUsdg: Number(state.policy.minimumBuyPriceUsdg),
     }
-    const fresh = await buildFreshPlan(principal, persistedBandCount, planningPolicy)
+    const fresh =
+      state.sourceReentry?.kind === 'CANONICAL_AUDITED_WITHDRAWN_WALLET_RESTART'
+        ? await buildFullRangeFreshPlan(principal, planningPolicy.minimumBuyPriceUsdg)
+        : await buildFreshPlan(principal, persistedBandCount, planningPolicy)
     state.plan = serializablePlan(fresh.plan)
     state.policy.weightsBps = fresh.plan.selected.bands.map((band) => band.weightBps)
     state.status = 'INITIAL_MINT_REQUIRED'
@@ -1558,6 +1667,9 @@ async function resumeInitial(state) {
     const totalGasUnits = estimatedGas + CONSERVATIVE_APPROVAL_GAS
     const actualFrictionBps = modeledGasFrictionBps(totalGasUnits, fresh.gasPrice, fresh.ethUsdg, principal)
     if (actualFrictionBps > MAXIMUM_BUILD_FRICTION_BPS) {
+      if (state.sourceReentry?.kind === 'CANONICAL_AUDITED_WITHDRAWN_WALLET_RESTART') {
+        throw new Error('WAIT: 五档建仓真实 Gas 摩擦超过 5%')
+      }
       if (fresh.plan.bandCount === 5) {
         const degraded = await buildFreshPlan(principal, 3, planningPolicy)
         state.plan = serializablePlan(degraded.plan)
