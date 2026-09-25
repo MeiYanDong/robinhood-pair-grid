@@ -47,7 +47,7 @@
     "martingale-resume-rebase-floor": "node --env-file-if-exists=.env.local scripts/pair-usdg-martingale.mjs resume-rebase-floor"
   },
   "dependencies": {
-    "viem": "2.56.3"
+    "viem": "2.56.8"
   },
   "devDependencies": {
     "@types/node": "22.20.1",
